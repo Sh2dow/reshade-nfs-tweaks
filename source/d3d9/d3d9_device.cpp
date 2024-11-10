@@ -12,6 +12,25 @@
 #include "com_utils.hpp"
 #include "hook_manager.hpp"
 #include "addon_manager.hpp"
+// NFS changes
+#ifdef GAME_MW
+#include "NFSMW_PreFEngHook.h"
+#endif
+#ifdef GAME_CARBON
+#include "NFSC_PreFEngHook.h"
+#endif
+#ifdef GAME_UG2
+#include "NFSU2_PreFEngHook.h"
+#endif
+#ifdef GAME_UG
+#include "NFSU_PreFEngHook.h"
+#endif
+#ifdef GAME_PS
+#include "NFSPS_PreFEngHook.h"
+#endif
+#ifdef GAME_UC
+#include "NFSUC_PreFEngHook.h"
+#endif
 
 using reshade::d3d9::to_handle;
 
@@ -2756,5 +2775,59 @@ void Direct3DDevice9::resize_primitive_up_buffers(UINT vertex_buffer_size, UINT 
 				_primitive_up_index_buffer);
 		}
 	}
+}
+#endif
+#if defined(GAME_UC) || defined(GAME_PS)
+#ifdef GAME_UC
+bool bGlobalMotionBlur = false;
+int NFSUC_MOTIONBLUR_ExitPointTrue = NFSUC_MOTIONBLUR_EXIT_TRUE;
+int NFSUC_MOTIONBLUR_ExitPointFalse = NFSUC_MOTIONBLUR_EXIT_FALSE;
+void __declspec(naked) MotionBlur_EntryPoint()
+{
+	if (!bGlobalMotionBlur)
+		_asm jmp NFSUC_MOTIONBLUR_ExitPointFalse
+	_asm
+	{
+		push 0xA
+		mov ecx, 0xDF1DE0
+		jmp NFSUC_MOTIONBLUR_ExitPointTrue
+	}
+}
+#endif
+void __stdcall ReShade_Hook()
+{
+	// Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+#ifdef GAME_UC
+	bGlobalMotionBlur = to_handle->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
+#endif
+	to_handle->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
+}
+
+int NFSUC_ExitPoint1 = NFSUC_EXIT1;
+int NFSUC_ExitPoint2 = NFSUC_EXIT2;
+int NFSUC_EntryPoint_EBX = 0;
+void __declspec(naked) ReShade_EntryPoint()
+{
+	_asm mov NFSUC_EntryPoint_EBX, ebx
+	ReShade_Hook();
+	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
+		_asm jmp NFSUC_ExitPoint1
+	_asm jmp NFSUC_ExitPoint2
+}
+
+
+#elseif defined(GAME_UC) || defined(GAME_PS)
+void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsigned int))FEMANAGER_RENDER_ADDRESS;
+void __stdcall FEManager_Render_Hook()
+{
+	unsigned int TheThis = 0;
+	_asm mov TheThis, ecx
+	// TexMod "fix"
+	// since TexMod is a hacky and leechy piece of garbage, we have to use regular pointers to D3D9 functions... without TexMod it works fine so there's that
+	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
+	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+
+	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	FEManager_Render(TheThis);
 }
 #endif

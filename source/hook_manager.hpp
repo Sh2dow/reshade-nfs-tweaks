@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <type_traits>
 
+#include "com_utils.hpp"
+
 namespace reshade::hooks
 {
 	/// <summary>

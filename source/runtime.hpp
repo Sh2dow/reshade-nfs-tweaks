@@ -37,6 +37,8 @@ namespace reshade
 		void on_reset();
 		void on_present(api::command_queue *present_queue);
 
+		void on_nfs_present();
+
 		uint64_t get_native() const final { return _swapchain->get_native(); }
 
 		void get_private_data(const uint8_t guid[16], uint64_t *data) const final { return _swapchain->get_private_data(guid, data); }
@@ -169,6 +171,10 @@ namespace reshade
 		void set_color_space(api::color_space color_space) final { _back_buffer_color_space = color_space; }
 
 		void reload_effect_next_frame(const char *effect_name) final;
+
+#ifdef GAME_UC
+		bool bMotionBlur;
+#endif
 
 	private:
 		static void check_for_update();
@@ -420,12 +426,17 @@ namespace reshade
 		void draw_gui_statistics();
 		void draw_gui_log();
 		void draw_gui_about();
+		void draw_gui_nfs();
 #if RESHADE_ADDON
 		void draw_gui_addons();
 #endif
 #if RESHADE_FX
 		void draw_variable_editor();
 		void draw_technique_editor();
+#endif
+
+#ifdef GAME_UC
+		bool bMotionBlur;
 #endif
 
 		bool init_imgui_resources();

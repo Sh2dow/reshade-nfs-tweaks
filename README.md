@@ -1,3 +1,19 @@
+# FORK NOTE
+This is a special build of ReShade catered to NFS games made by EA Black Box.
+
+It set to render before FrontEnd graphics, so the UI isn't affected by post-processing effects.
+
+Also is included a special "NFS Tweaks" menu which contains a set of special and debugging features designed to manipulate the game in various ways (some of which are ported straight from the debug builds).
+
+A LOT is left on the todo list, such as merging with the latest branch of ReShade and adding a bunch of more features, but the biggest one so far is getting dear imgui to render before FrontEnd.
+
+## NFS Tweak Menu note
+I must stress one caveat - this menu is not designed to babysit the user. It is designed to be a debug menu alternative.
+
+By that I mean the features within the menu **can crash your game** and I will not consider this to be a bug. (Unless the implementation of the feature is wrong, which there will probably be cases of)
+
+# ORIGINAL DESCRIPTION
+
 ReShade
 =======
 

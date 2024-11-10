@@ -24,6 +24,24 @@
 #include <cstdlib> // std::lldiv, std::strtol
 #include <cstring> // std::memcmp, std::memcpy
 #include <algorithm> // std::any_of, std::count_if, std::find, std::find_if, std::max, std::min, std::replace, std::rotate, std::search, std::swap, std::transform
+#ifdef GAME_MW
+#include "NFSMW_PreFEngHook.h"
+#endif
+#ifdef GAME_CARBON
+#include "NFSC_PreFEngHook.h"
+#endif
+#ifdef GAME_UG2
+#include "NFSU2_PreFEngHook.h"
+#endif
+#ifdef GAME_UG
+#include "NFSU_PreFEngHook.h"
+#endif
+#ifdef GAME_PS
+#include "NFSPS_PreFEngHook.h"
+#endif
+#ifdef GAME_UC
+#include "NFSUC_PreFEngHook.h"
+#endif
 
 static bool filter_text(const std::string_view text, const std::string_view filter)
 {
@@ -1416,7 +1434,9 @@ void reshade::runtime::draw_gui()
 			{ _("Settings###settings"), &runtime::draw_gui_settings },
 			{ _("Statistics###statistics"), &runtime::draw_gui_statistics },
 			{ _("Log###log"), &runtime::draw_gui_log },
-			{ _("About###about"), &runtime::draw_gui_about }
+			{ _("About###about"), &runtime::draw_gui_about },
+			{ _("About###about"), &runtime::draw_gui_nfs }
+
 		};
 
 		const ImGuiID root_space_id = ImGui::GetID("ViewportDockspace");
@@ -3204,6 +3224,3458 @@ This Font Software is licensed under the SIL Open Font License, Version 1.1. (ht
 
 	ImGui::PopTextWrapPos();
 }
+
+
+// NFS DEBUG/TWEAK MENU
+// NFS CODE START
+struct bVector3 // same as UMath::Vector3 anyways...
+{
+	float x;
+	float y;
+	float z;
+};
+
+struct bVector4
+{
+	float x;
+	float y;
+	float z;
+	float w;
+};
+
+struct bMatrix4
+{
+	bVector4 v0;
+	bVector4 v1;
+	bVector4 v2;
+	bVector4 v3;
+};
+
+// math stuff for RigidBody rotations...
+void SetZRot(bMatrix4* dest, float zangle)
+{
+	float v3;
+	float v4;
+	float v5;
+	float v6;
+	float v7;
+	bMatrix4* v8;
+	int v9;
+
+	v3 = (zangle * 6.2831855);
+	v4 = cos(v3);
+	v5 = v3;
+	v6 = v4;
+	v7 = sin(v5);
+	v8 = dest;
+	v9 = 16;
+	do
+	{
+		v8->v0.x = 0.0;
+		v8 = (bMatrix4*)((char*)v8 + 4);
+		--v9;
+	} while (v9);
+	dest->v1.y = v6;
+	dest->v0.x = v6;
+	dest->v0.y = v7;
+	dest->v1.x = -(float)v7;
+	dest->v2.z = 1.0;
+	dest->v3.w = 1.0;
+}
+
+void Matrix4Multiply(bMatrix4* m1, bMatrix4* m2, bMatrix4* result)
+{
+	float matrix1[4][4] = { 0 };
+	float matrix2[4][4] = { 0 };
+	float resulta[4][4] = { 0 };
+
+	memcpy(&matrix1, m1, sizeof(bMatrix4));
+	memcpy(&matrix2, m2, sizeof(bMatrix4));
+
+	for (int i = 0; i < 4; ++i)
+	{
+		for (int j = 0; j < 4; ++j)
+		{
+			for (int k = 0; k < 4; ++k)
+			{
+				resulta[i][j] += matrix1[i][k] * matrix2[k][j];
+			}
+		}
+	}
+	memcpy(result, &resulta, sizeof(bMatrix4));
+}
+
+enum GameFlowState
+{
+	GAMEFLOW_STATE_NONE = 0,
+	GAMEFLOW_STATE_LOADING_FRONTEND = 1,
+	GAMEFLOW_STATE_UNLOADING_FRONTEND = 2,
+	GAMEFLOW_STATE_IN_FRONTEND = 3,
+	GAMEFLOW_STATE_LOADING_REGION = 4,
+	GAMEFLOW_STATE_LOADING_TRACK = 5,
+	GAMEFLOW_STATE_RACING = 6,
+	GAMEFLOW_STATE_UNLOADING_TRACK = 7,
+	GAMEFLOW_STATE_UNLOADING_REGION = 8,
+	GAMEFLOW_STATE_EXIT_DEMO_DISC = 9,
+};
+
+enum GRace_Context // SkipFE Race Type
+{
+	kRaceContext_QuickRace = 0,
+	kRaceContext_TimeTrial = 1,
+	kRaceContext_Online = 2,
+	kRaceContext_Career = 3,
+	kRaceContext_Count = 4,
+};
+
+char GameFlowStateNames[10][35] = {
+  "NONE",
+  "LOADING FRONTEND",
+  "UNLOADING FRONTEND",
+  "IN FRONTEND",
+  "LOADING REGION",
+  "LOADING TRACK",
+  "RACING",
+  "UNLOADING TRACK",
+  "UNLOADING REGION",
+  "EXIT DEMO DISC",
+};
+
+char GRaceContextNames[kRaceContext_Count][24] // SkipFE Race Type
+{
+	"Quick Race",
+	"Time Trial",
+	"Online",
+	"Career",
+};
+char SkipFERaceTypeDisplay[64];
+
+char PrecullerModeNames[4][27] = {
+	"Preculler Mode: Off",
+	"Preculler Mode: On",
+	"Preculler Mode: Blinking",
+	"Preculler Mode: High Speed",
+};
+
+bVector3 TeleportPos = { 0 };
+
+void(__thiscall* GameFlowManager_UnloadFrontend)(void* dis) = (void(__thiscall*)(void*))GAMEFLOWMGR_UNLOADFE_ADDR;
+void(__thiscall* GameFlowManager_UnloadTrack)(void* dis) = (void(__thiscall*)(void*))GAMEFLOWMGR_UNLOADTRACK_ADDR;
+void(__thiscall* GameFlowManager_LoadRegion)(void* dis) = (void(__thiscall*)(void*))GAMEFLOWMGR_LOADREGION_ADDR;
+int SkipFETrackNum = DEFAULT_TRACK_NUM;
+
+void(__stdcall* RaceStarter_StartSkipFERace)() = (void(__stdcall*)())STARTSKIPFERACE_ADDR;
+
+#ifdef GAME_MW
+void(__stdcall* BootFlowManager_Init)() = (void(__stdcall*)())BOOTFLOWMGR_INIT_ADDR;
+#endif
+
+bool OnlineEnabled_OldState;
+
+#ifndef OLD_NFS
+int ActiveHotPos = 0;
+bool bTeleFloorSnap = false;
+bool bTeleFloorSnap_OldState = false;
+
+void(*Sim_SetStream)(bVector3* location, bool blocking) = (void(*)(bVector3*, bool))SIM_SETSTREAM_ADDR;
+bool(__thiscall*WCollisionMgr_GetWorldHeightAtPointRigorous)(void* dis, bVector3* pt, float* height, bVector3* normal) = (bool(__thiscall*)(void*, bVector3*, float*, bVector3*))WCOLMGR_GETWORLDHEIGHT_ADDR;
+
+char SkipFEPlayerCar[64] = { DEFAULT_PLAYERCAR };
+char SkipFEPlayerCar2[64] = { DEFAULT_PLAYER2CAR };
+#ifdef GAME_PS
+char SkipFEPlayerCar3[64] = { DEFAULT_PLAYER3CAR };
+char SkipFEPlayerCar4[64] = { DEFAULT_PLAYER4CAR };
+char SkipFETurboSFX[64] = "default";
+char SkipFEForceHubSelectionSet[64];
+char SkipFEForceRaceSelectionSet[64];
+char SkipFEForceNIS[64];
+char SkipFEForceNISContext[64];
+bool bCalledProStreetTele = false;
+#endif
+#ifdef GAME_MW
+char SkipFEOpponentPresetRide[64];
+#else
+#ifdef GAME_CARBON
+char SkipFEPlayerPresetRide[64];
+char SkipFEWingmanPresetRide[64];
+char SkipFEOpponentPresetRide0[64];
+char SkipFEOpponentPresetRide1[64];
+char SkipFEOpponentPresetRide2[64];
+char SkipFEOpponentPresetRide3[64];
+char SkipFEOpponentPresetRide4[64];
+char SkipFEOpponentPresetRide5[64];
+char SkipFEOpponentPresetRide6[64];
+char SkipFEOpponentPresetRide7[64];
+#endif
+#endif
+
+// camera stuff
+void(__cdecl* CameraAI_SetAction)(int EVIEW_ID, const char* action) = (void(__cdecl*)(int, const char*))CAMERA_SETACTION_ADDR;
+
+int(__thiscall* UTL_IList_Find)(void* dis, void* IList) = (int(__thiscall*)(void*, void*))UTL_ILIST_FIND_ADDR;
+#ifdef HAS_COPS
+bool bDebuggingHeat = false;
+bool bSetFEDBHeat = false;
+float DebugHeat = 1.0;
+#ifndef GAME_UC
+void(__thiscall* FECareerRecord_AdjustHeatOnEventWin)(void* dis) = (void(__thiscall*)(void*))HEATONEVENTWIN_ADDR;
+void(__cdecl* AdjustStableHeat_EventWin)(int player) = (void(__cdecl*)(int))ADJUSTSTABLEHEAT_EVENTWIN_ADDR;
+void __stdcall FECareerRecord_AdjustHeatOnEventWin_Hook()
+{
+	unsigned int TheThis = 0;
+	_asm mov TheThis, ecx
+	if (!bDebuggingHeat)
+		return FECareerRecord_AdjustHeatOnEventWin((void*)TheThis);
+	*(float*)(TheThis + CAREERHEAT_OFFSET) = DebugHeat;
+}
+#endif
+
+void TriggerSetHeat()
+{
+	int FirstLocalPlayer = **(int**)PLAYER_LISTABLESET_ADDR;
+	int LocalPlayerVtable = *(int*)(FirstLocalPlayer);
+	int LocalPlayerSimable = 0;
+	int PlayerInstance = 0;
+
+	int(__thiscall * LocalPlayer_GetSimable)(void* dis);
+
+	if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_RACING)
+	{
+		LocalPlayer_GetSimable = (int(__thiscall*)(void*)) * (int*)(LocalPlayerVtable + GETSIMABLE_OFFSET);
+		LocalPlayerSimable = LocalPlayer_GetSimable((void*)FirstLocalPlayer);
+
+		PlayerInstance = UTL_IList_Find(*(void**)(LocalPlayerSimable + 4), (void*)IPERPETRATOR_HANDLE_ADDR);
+
+
+		if (PlayerInstance)
+		{
+			int(__thiscall *AIPerpVehicle_SetHeat)(void* dis, float heat);
+			AIPerpVehicle_SetHeat = (int(__thiscall*)(void*, float))*(int*)((*(int*)PlayerInstance) + PERP_SETHEAT_OFFSET);
+			AIPerpVehicle_SetHeat((void*)PlayerInstance, DebugHeat);
+		}
+
+	}
+#ifndef GAME_UC
+	if (bSetFEDBHeat)
+	{
+		bDebuggingHeat = true;
+		AdjustStableHeat_EventWin(0);
+		bDebuggingHeat = false;
+	}
+#endif
+}
+#endif
+
+// race finish stuff
+void(__cdecl* Game_NotifyRaceFinished)(void* ISimable) = (void(__cdecl*)(void*))GAMENOTIFYRACEFINISHED_ADDR;
+//void(__cdecl* Game_NotifyLapFinished)(void* ISimable, int unk) = (void(__cdecl*)(void*, int))GAMENOTIFYLAPFINISHED_ADDR;
+void(__cdecl* Game_EnterPostRaceFlow)() = (void(__cdecl*)())GAMEENTERPOSTRACEFLOW_ADDR;
+
+int ForceFinishRace() // TODO: fix this, it's broken, either crashes or half-works
+{
+	int FirstLocalPlayer = **(int**)PLAYER_LISTABLESET_ADDR;
+	int LocalPlayerVtable = *(int*)(FirstLocalPlayer);
+	int LocalPlayerSimable = 0;
+
+	int(__thiscall * LocalPlayer_GetSimable)(void* dis);
+
+	if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_RACING)
+	{
+		LocalPlayer_GetSimable = (int(__thiscall*)(void*)) * (int*)(LocalPlayerVtable + GETSIMABLE_OFFSET);
+		LocalPlayerSimable = LocalPlayer_GetSimable((void*)FirstLocalPlayer);
+		//Game_NotifyLapFinished((void*)LocalPlayerSimable, FinishParam);
+		Game_NotifyRaceFinished((void*)LocalPlayerSimable);
+		Game_EnterPostRaceFlow();
+	}
+	return 0;
+}
+#ifdef GAME_UC
+void FlipCar()
+{
+	int FirstVehicle = **(int**)VEHICLE_LISTABLESET_ADDR;
+
+	int RigidBodyInstance = 0;
+	int RigidBodyVtable = 0;
+
+	bMatrix4 rotor = { 0 };
+	bMatrix4 result = { 0 };
+	bMatrix4* GetMatrixRes = NULL;
+
+	RigidBodyInstance = UTL_IList_Find(*(void**)(FirstVehicle + 4), (void*)IRIGIDBODY_HANDLE_ADDR);
+
+
+	if (RigidBodyInstance)
+	{
+		RigidBodyVtable = *(int*)(RigidBodyInstance);
+		bMatrix4*(__thiscall * RigidBody_GetMatrix4)(void* dis);
+		RigidBody_GetMatrix4 = (bMatrix4*(__thiscall*)(void*)) * (int*)(RigidBodyVtable + RB_GETMATRIX4_OFFSET);
+
+		int(__thiscall * RigidBody_SetOrientation)(void* dis, bMatrix4 * input);
+		RigidBody_SetOrientation = (int(__thiscall*)(void*, bMatrix4*)) * (int*)(RigidBodyVtable + RB_SETORIENTATION_OFFSET);
+
+		GetMatrixRes = RigidBody_GetMatrix4((void*)RigidBodyInstance);
+		memcpy(&result, GetMatrixRes, 0x40);
+		SetZRot(&rotor, 0.5);
+		Matrix4Multiply(&result, &rotor, &result);
+		RigidBody_SetOrientation((void*)RigidBodyInstance, &result);
+	}
+}
+#else
+void FlipCar()
+{
+	int FirstVehicle = **(int**)VEHICLE_LISTABLESET_ADDR;
+
+	int RigidBodyInstance = 0;
+	int RigidBodyVtable = 0;
+
+	bMatrix4 rotor = { 0 };
+	bMatrix4 result = { 0 };
+
+	RigidBodyInstance = UTL_IList_Find(*(void**)(FirstVehicle + 4), (void*)IRIGIDBODY_HANDLE_ADDR);
+
+
+	if (RigidBodyInstance)
+	{
+		RigidBodyVtable = *(int*)(RigidBodyInstance);
+		int(__thiscall * RigidBody_GetMatrix4)(void* dis, bMatrix4* dest);
+		RigidBody_GetMatrix4 = (int(__thiscall*)(void*, bMatrix4*)) *(int*)(RigidBodyVtable + RB_GETMATRIX4_OFFSET);
+
+		int(__thiscall * RigidBody_SetOrientation)(void* dis, bMatrix4 * input);
+		RigidBody_SetOrientation = (int(__thiscall*)(void*, bMatrix4*)) *(int*)(RigidBodyVtable + RB_SETORIENTATION_OFFSET);
+
+		RigidBody_GetMatrix4((void*)RigidBodyInstance, &result);
+		SetZRot(&rotor, 0.5);
+		Matrix4Multiply(&result, &rotor, &result);
+		RigidBody_SetOrientation((void*)RigidBodyInstance, &result);
+	}
+}
+#endif
+
+// overlay switch stuff that is only found in newer NFS games...
+#ifndef GAME_UC
+void(__thiscall* cFEng_QueuePackagePop)(void* dis, int num_to_pop) = (void(__thiscall*)(void*, int))FENG_QUEUEPACKAGEPOP_ADDR;
+#ifdef GAME_MW
+void(__thiscall* cFEng_QueuePackageSwitch)(void* dis, const char* pPackageName, int unk1, unsigned int unk2, bool) = (void(__thiscall*)(void*, const char*, int, unsigned int, bool))FENG_QUEUEPACKAGESWITCH_ADDR;
+#else
+void(__thiscall* cFEng_QueuePackageSwitch)(void* dis, const char* pPackageName, int pArg) = (void(__thiscall*)(void*, const char*, int))FENG_QUEUEPACKAGESWITCH_ADDR;
+#endif
+char CurrentOverlay[128] = { "ScreenPrintf.fng" };
+
+void SwitchOverlay(char* overlay_name)
+{
+	cFEng_QueuePackagePop(*(void**)FENG_MINSTANCE_ADDR, 1);
+#ifdef GAME_MW
+	cFEng_QueuePackageSwitch(*(void**)FENG_MINSTANCE_ADDR, overlay_name, 0, 0, false);
+#else
+	cFEng_QueuePackageSwitch(*(void**)FENG_MINSTANCE_ADDR, overlay_name, 0);
+#endif
+}
+
+unsigned int PlayerBin = 16;
+#endif
+void TriggerWatchCar(int type)
+{
+	//*(bool*)CAMERADEBUGWATCHCAR_ADDR = true;
+
+	*(int*)MTOGGLECAR_ADDR = 0;
+	*(int*)MTOGGLECARLIST_ADDR = type;
+	*(bool*)CAMERADEBUGWATCHCAR_ADDR = !*(bool*)CAMERADEBUGWATCHCAR_ADDR;
+	if (*(bool*)CAMERADEBUGWATCHCAR_ADDR)
+		CameraAI_SetAction(1, "CDActionDebugWatchCar");
+	else
+		CameraAI_SetAction(1, "CDActionDrive");
+}
+
+#ifdef GAME_MW
+void(__thiscall* EEnterBin_EEnterBin)(void* dis, int bin) = (void(__thiscall*)(void*, int))EENTERBIN_ADDR;
+void*(__cdecl* Event_Alloc)(int size) = (void*(__cdecl*)(int))EVENTALLOC_ADDR;
+char JumpToBinOptionText[32];
+
+void JumpToBin(int bin)
+{
+	void* EventThingy = NULL;
+	if (!*(int*)GRACESTATUS_ADDR && *(unsigned char*)CURRENTBIN_POINTER >= 2)
+	{
+		EEnterBin_EEnterBin(Event_Alloc(0xC), bin);
+	}
+}
+
+void PlayMovie()
+{
+	if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_IN_FRONTEND)
+		SwitchOverlay("FEAnyMovie.fng");
+	if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_RACING)
+		SwitchOverlay("InGameAnyMovie.fng");
+
+}
+
+bVector3 VisualFilterColourPicker = {0.88, 0.80, 0.44};
+float VisualFilterColourMultiR = 1.0;
+float VisualFilterColourMultiG = 1.0;
+float VisualFilterColourMultiB = 1.0;
+enum IVisualTreatment_eVisualLookState
+{
+	HEAT_LOOK = 0,
+	COPCAM_LOOK = 1,
+	FE_LOOK = 2,
+};
+
+#else
+char SkipFERaceID[64];
+
+#ifndef GAME_UC
+char MovieFilename[64];
+void(__cdecl* FEAnyMovieScreen_PushMovie)(const char* package) = (void(__cdecl*)(const char*))PUSHMOVIE_ADDR;
+
+void PlayMovie()
+{
+	if (*(bool*)ISMOVIEPLAYING_ADDR)
+	{
+		cFEng_QueuePackagePop(*(void**)FENG_MINSTANCE_ADDR, 1);
+	}
+	FEAnyMovieScreen_PushMovie(MovieFilename);
+}
+#endif
+#endif
+
+#ifdef GAME_CARBON
+// infinite NOS
+bool bInfiniteNOS = false;
+bool(__thiscall* EasterEggCheck)(void* dis, int cheat) = (bool(__thiscall*)(void*, int))EASTEREGG_CHECK_FUNC;
+
+bool __stdcall EasterEggCheck_Hook(int cheat)
+{
+	int TheThis = 0;
+	_asm mov TheThis, ecx
+	if (cheat == 0xA && bInfiniteNOS)
+		return true;
+	return EasterEggCheck((void*)TheThis, cheat);
+}
+
+char BossNames[FAKEBOSS_COUNT][8] = {
+	"None",
+	"Angie",
+	"Darius",
+	"Wolf",
+	"Kenji",
+	"Neville"
+};
+char BossNames_DisplayStr[64] = "Force Fake Boss: Unknown";
+
+char FeCarPosition_Names[CAR_FEPOSITION_COUNT][28] = {
+	"CarPosition_Main",
+	"CarPosition_Muscle",
+	"CarPosition_Tuner",
+	"CarPosition_Exotic",
+	"CarPosition_Generic",
+	"CarPosition_CarClass",
+	"CarPosition_CarLot_Muscle",
+	"CarPosition_CarLot_Tuner",
+	"CarPosition_CarLot_Exotic",
+	"CarPosition_CarLot_Mazda"
+};
+
+char FeCarPosition_DisplayStr[64] = "FeLocation: Unknown";
+
+int FeCarPosition = 0;
+
+#endif
+
+#if defined(GAME_MW) || defined(GAME_CARBON)
+void __stdcall JumpToNewPos(bVector3* pos)
+{
+	int FirstLocalPlayer = **(int**)PLAYER_LISTABLESET_ADDR;
+	int LocalPlayerVtable;
+	bVector3 ActualTeleportPos = { -(*pos).y, (*pos).z, (*pos).x }; // Simables have coordinates in this format...
+	float Height = (*pos).z;
+	char WCollisionMgrSpace[0x20] = { 0 };
+
+	void(__thiscall*LocalPlayer_SetPosition)(void* dis, bVector3 *position);
+
+	if (FirstLocalPlayer)
+	{
+		Sim_SetStream(&ActualTeleportPos, true);
+
+		if (bTeleFloorSnap)
+		{
+			if (!WCollisionMgr_GetWorldHeightAtPointRigorous(WCollisionMgrSpace, &ActualTeleportPos, &Height, NULL))
+			{
+				Height += 1.0;
+			}
+			ActualTeleportPos.y = Height; // actually Z in Simables
+		}
+
+		LocalPlayerVtable = *(int*)(FirstLocalPlayer);
+		LocalPlayer_SetPosition = (void(__thiscall*)(void*, bVector3*))*(int*)(LocalPlayerVtable+0x10);
+		LocalPlayer_SetPosition((void*)FirstLocalPlayer, &ActualTeleportPos);
+	}
+}
+
+#else
+// Undercover & ProStreet are special beings. They're actually multi threaded.
+// We have to do teleporting during EMainService / World::Service (or same at least in the same thread as World updates), otherwise we cause hanging bugs...
+
+bool bDoTeleport = false;
+bVector3 ServiceTeleportPos = { 0 };
+
+// Track loading stuff
+bool bDoTrackUnloading = false;
+bool bDoFEUnloading= false;
+bool bDoLoadRegion = false;
+
+bool bDoTriggerWatchCar = false;
+int CarTypeToWatch = CARLIST_TYPE_AIRACER;
+
+bool bDoFlipCar = false;
+
+bool bDoOverlaySwitch = false;
+bool bDoPlayMovie = false;
+
+#ifdef GAME_UC
+bool bDoAwardCash = false;
+float CashToAward = 0.0;
+void(__thiscall* GMW2Game_AwardCash)(void* dis, float cash, float unk) = (void(__thiscall*)(void*, float, float))GMW2GAME_AWARDCASH_ADDR;
+bool bDisableCops = false;
+#endif
+
+void __stdcall JumpToNewPosPropagator(bVector3* pos)
+{
+	int FirstLocalPlayer = **(int**)PLAYER_LISTABLESET_ADDR;
+	int LocalPlayerVtable;
+	bVector3 ActualTeleportPos = { -(*pos).y, (*pos).z, (*pos).x }; // Simables have coordinates in this format...
+	float Height = (*pos).z;
+	char WCollisionMgrSpace[0x20] = { 0 };
+
+	void(__thiscall * LocalPlayer_SetPosition)(void* dis, bVector3 * position);
+
+	if (FirstLocalPlayer)
+	{
+		Sim_SetStream(&ActualTeleportPos, true);
+		if (bTeleFloorSnap)
+		{
+			if (!WCollisionMgr_GetWorldHeightAtPointRigorous(WCollisionMgrSpace, &ActualTeleportPos, &Height, NULL))
+			{
+				Height += 1.0;
+			}
+			ActualTeleportPos.y = Height; // actually Z in Simables
+		}
+
+		LocalPlayerVtable = *(int*)(FirstLocalPlayer);
+		LocalPlayer_SetPosition = (void(__thiscall*)(void*, bVector3*)) * (int*)(LocalPlayerVtable + 0x10);
+		LocalPlayer_SetPosition((void*)FirstLocalPlayer, &ActualTeleportPos);
+	}
+}
+
+void __stdcall JumpToNewPos(bVector3* pos)
+{
+	memcpy(&ServiceTeleportPos, pos, sizeof(bVector3));
+	bDoTeleport = true;
+}
+
+void __stdcall MainService_Hook()
+{
+	if (bDoTeleport)
+	{
+#ifdef GAME_PS
+		if (bCalledProStreetTele)
+		{
+			bTeleFloorSnap_OldState = bTeleFloorSnap;
+			bTeleFloorSnap = true;
+		}
+#endif
+		JumpToNewPosPropagator(&ServiceTeleportPos);
+		bDoTeleport = false;
+#ifdef GAME_PS
+		if (bCalledProStreetTele)
+			bTeleFloorSnap = bTeleFloorSnap_OldState;
+#endif
+	}
+	if (bDoTrackUnloading)
+	{
+		GameFlowManager_UnloadTrack((void*)GAMEFLOWMGR_ADDR);
+		bDoTrackUnloading = false;
+	}
+	if (bDoFEUnloading)
+	{
+		*(int*)SKIPFE_ADDR = 1;
+		*(int*)SKIPFETRACKNUM_ADDR = SkipFETrackNum;
+		GameFlowManager_UnloadFrontend((void*)GAMEFLOWMGR_ADDR);
+		bDoFEUnloading = false;
+	}
+	if (bDoLoadRegion)
+	{
+		*(int*)SKIPFE_ADDR = 1;
+		*(int*)SKIPFETRACKNUM_ADDR = SkipFETrackNum;
+		GameFlowManager_LoadRegion((void*)GAMEFLOWMGR_ADDR);
+		bDoLoadRegion = false;
+	}
+	if (bDoTriggerWatchCar)
+	{
+		TriggerWatchCar(CarTypeToWatch);
+		bDoTriggerWatchCar = false;
+	}
+
+	if (bDoFlipCar)
+	{
+		FlipCar();
+		bDoFlipCar = false;
+	}
+#ifdef GAME_UC
+	if (bDoAwardCash)
+	{
+		GMW2Game_AwardCash(*(void**)GMW2GAME_OBJ_ADDR, CashToAward, 0.0);
+		bDoAwardCash = false;
+	}
+#else
+	if (bDoOverlaySwitch)
+	{
+		SwitchOverlay(CurrentOverlay);
+		bDoOverlaySwitch = false;
+	}
+
+	if (bDoPlayMovie)
+	{
+		PlayMovie();
+		bDoPlayMovie = false;
+	}
+#endif
+
+}
+
+#endif
+#else
+#ifdef GAME_UG2
+int GlobalRainType = DEFAULT_RAIN_TYPE;
+
+void(__thiscall* Car_ResetToPosition)(unsigned int dis, bVector3* position, float unk, short int angle, bool unk2) = (void(__thiscall*)(unsigned int, bVector3*, float, short int, bool))CAR_RESETTOPOS_ADDR;
+int(__cdecl* eGetView)(int view) = (int(__cdecl*)(int))EGETVIEW_ADDR;
+void(__thiscall* Rain_Init)(void* dis, int RainType, float unk) = (void(__thiscall*)(void*, int, float))RAININIT_ADDR;
+
+
+void __stdcall SetRainBase_Custom()
+{
+	int ViewResult;
+	ViewResult = eGetView(1);
+	ViewResult = *(int*)(ViewResult + 0x64);
+	*(float*)(ViewResult + 0x509C) = 1.0;
+
+	ViewResult = eGetView(2);
+	ViewResult = *(int*)(ViewResult + 0x64);
+	*(float*)(ViewResult + 0x509C) = 1.0;
+
+	ViewResult = eGetView(1);
+	ViewResult = *(int*)(ViewResult + 0x64);
+	Rain_Init((void*)ViewResult, GlobalRainType, 1.0);
+
+	ViewResult = eGetView(2);
+	ViewResult = *(int*)(ViewResult + 0x64);
+	Rain_Init((void*)ViewResult, GlobalRainType, 1.0);
+}
+
+void __stdcall JumpToNewPos(bVector3* pos)
+{
+	int FirstLocalPlayer = *(int*)PLAYERBYINDEX_ADDR;
+
+	if (FirstLocalPlayer)
+	{
+		Car_ResetToPosition(*(unsigned int*)(FirstLocalPlayer + 4), pos, 0, 0, false);
+	}
+}
+
+void(__cdecl* FEngPushPackage)(const char* pkg_name, int unk) = (void(__cdecl*)(const char*, int))FENG_PUSHPACKAGE_ADDR;
+void(__cdecl* FEngPopPackage)(const char* pkg_name) = (void(__cdecl*)(const char*))FENG_POPPACKAGE_ADDR;
+//void(__cdecl* FEngSwitchPackage)(const char* pkg_name, const char* pkg_name2 ,int unk) = (void(__cdecl*)(const char*, const char*, int))FENG_SWITCHPACKAGE_ADDR;
+char CurrentOverlay[64] = { "ScreenPrintf.fng" };
+char OverlayToPush[64] = { "ScreenPrintf.fng" };
+
+char* cFEng_FindPackageWithControl_Name()
+{
+	return *(char**)(*(int*)((*(int*)FENG_PINSTANCE_ADDR) + 0x10) + 0x8);
+}
+
+void SwitchOverlay(char* overlay_name)
+{
+	FEngPopPackage(cFEng_FindPackageWithControl_Name());
+	strcpy(OverlayToPush, overlay_name);
+	FEngPushPackage(OverlayToPush, 0);
+	//FEngSwitchPackage(cFEng_FindPackageWithControl_Name(), overlay_name, 0);
+}
+
+#else
+// Since Undergound 1 on PC was compiled with GOD AWFUL OPTIMIZATIONS, the actual function symbol definition does not match (like it does in *gasp* other platforms and Underground 2)
+// Arguments are passed through registers... REGISTERS. ON x86!
+// THIS ISN'T MIPS OR PPC FOR CRYING OUT LOUD
+// What devilish compiler setting even is this?
+// Anyhow, it's still a thiscall, except, get this, POSITION and ANGLE are passed through EDX and EAX respectively
+// So it's not even in ORDER, it's ARGUMENT 1 and ARGUMENT 3
+void(__thiscall* Car_ResetToPosition)(unsigned int dis, float unk, bool unk2) = (void(__thiscall*)(unsigned int, float, bool))CAR_RESETTOPOS_ADDR;
+
+void __stdcall JumpToNewPos(bVector3* pos)
+{
+	int FirstLocalPlayer = *(int*)PLAYERBYINDEX_ADDR;
+
+	if (FirstLocalPlayer)
+	{
+		_asm
+		{
+			mov edx, pos
+			xor eax, eax
+		}
+		Car_ResetToPosition(*(unsigned int*)(FirstLocalPlayer + 4), 0, false);
+	}
+}
+#endif
+
+#endif
+
+#ifdef GAME_PS
+// ProStreet Caves, because a lot of code is either optimized/missing or SecuRom'd, this should in theory work with UC if it is necessary
+// A necessary evil to bring some features back.
+// Everything else is hooked cleanly, no caves.
+
+bool bToggleAiControl = false;
+//int AIControlCaveExit = 0x41D296;
+int AIControlCaveExit2 = AICONTROL_CAVE_EXIT;
+int UpdateWrongWay = UPDATEWRONGWAY_ADDR;
+bool bAppliedSpeedLimiterPatches = false;
+
+void __declspec(naked) ToggleAIControlCave()
+{
+	_asm
+	{
+		mov al, bToggleAiControl
+		test al, al
+		jz AIControlCaveExit
+		mov eax, [edi + 0x1A38]
+		lea ecx, [edi + 0x1A38]
+		call dword ptr [eax+8]
+		neg al
+		sbb al, al
+		inc al
+		lea ecx, [edi + 0x1A38]
+		push eax
+		mov eax, [edi + 0x1A38]
+		call dword ptr [eax+0xC]
+		mov bToggleAiControl, 0
+	AIControlCaveExit:
+		push edi
+		call UpdateWrongWay
+		jmp AIControlCaveExit2
+	}
+}
+
+bool bInfiniteNOS = false;
+void __declspec(naked) InfiniteNOSCave()
+{
+	if (bInfiniteNOS)
+		_asm mov eax, 0xFF
+
+	_asm
+	{
+		mov[esi + 0x10C], eax
+		pop esi
+		add esp, 8
+		retn 8
+	}
+}
+
+bool bDrawWorld = true;
+int DrawWorldCaveTrueExit = DRAWWORLD_CAVE_TRUE_EXIT;
+int DrawWorldCaveFalseExit = DRAWWORLD_CAVE_FALSE_EXIT;
+void __declspec(naked) DrawWorldCave()
+{
+	if (!bDrawWorld)
+		_asm jmp DrawWorldCaveFalseExit
+	_asm
+	{
+		mov eax, dword ptr [GAMEFLOWMGR_STATUS_ADDR]
+		cmp eax, 4
+		jz DWCF_label
+		jmp DrawWorldCaveTrueExit
+		DWCF_label:
+		jmp DrawWorldCaveFalseExit
+	}
+}
+
+float GameSpeed = 1.0;
+float GameSpeedConstant = 1.0;
+
+int GameSpeedCaveExit = GAMESPEED_CAVE_EXIT;
+void __declspec(naked) GameSpeedCave()
+{
+	_asm
+	{
+		fld GameSpeedConstant
+		fld GameSpeed
+		mov esi, ecx
+		fucompp
+		fnstsw ax
+		test ah, 0x44
+		jnp GSCE_LABEL
+		fld GameSpeed
+		pop esi
+		pop ebx
+		add esp, 8
+		retn 8
+		GSCE_LABEL:
+		jmp GameSpeedCaveExit
+	}
+}
+
+int __stdcall RetZero()
+{
+	return 0;
+}
+
+void ApplySpeedLimiterPatches()
+{
+	injector::WriteMemory<unsigned int>(0x0040BE15, 0, true);
+	injector::WriteMemory<unsigned int>(0x004887A3, 0, true);
+	injector::WriteMemory<unsigned int>(0x00488AA9, 0, true);
+	injector::WriteMemory<unsigned int>(0x00488AE3, 0, true);
+	injector::WriteMemory<unsigned int>(0x00718B3F, 0, true);
+	injector::WriteMemory<unsigned int>(0x0071E4E8, 0, true);
+	injector::MakeJMP(0x00402820, RetZero, true);
+}
+
+void UndoSpeedLimiterPatches()
+{
+	injector::WriteMemory<unsigned int>(0x0040BE15, 0x0A2D9ECB4, true);
+	injector::WriteMemory<unsigned int>(0x004887A3, 0x0A2D9ECB4, true);
+	injector::WriteMemory<unsigned int>(0x00488AA9, 0x0A2D9ECB4, true);
+	injector::WriteMemory<unsigned int>(0x00488AE3, 0x0A2D9ECB4, true);
+	injector::WriteMemory<unsigned int>(0x00718B3F, 0x0A2D9ECB4, true);
+	injector::WriteMemory<unsigned int>(0x0071E4E8, 0x0A2D9ECB4, true);
+	injector::WriteMemory<unsigned int>(0x00402820, 0x66E9FF6A, true);
+	injector::WriteMemory<unsigned int>(0x00402822, 0x0DCA66E9, true);
+}
+
+#endif
+#ifdef GAME_UC
+bool bInfiniteNOS = false;
+int InfiniteNOSExitTrue = INFINITENOS_CAVE_EXIT_TRUE;
+int InfiniteNOSExitFalse = INFINITENOS_CAVE_EXIT_FALSE;
+int InfiniteNOSExitBE = INFINITENOS_CAVE_EXIT_BE;
+void __declspec(naked) InfiniteNOSCave()
+{
+	_asm
+	{
+		jbe InfNosExitBE
+		cmp bInfiniteNOS, 0
+		jne InfNosExitTrue
+		jmp InfiniteNOSExitFalse
+	InfNosExitTrue:
+		jmp InfiniteNOSExitTrue
+	InfNosExitBE:
+		jmp InfiniteNOSExitBE
+	}
+
+}
+
+bool bToggleAiControl = false;
+bool bBeTrafficCar = false;
+//int AIControlCaveExit = AICONTROL_CAVE_EXIT;
+int AIControlCaveExit2 = AICONTROL_CAVE_EXIT2;
+int UpdateWrongWay = 0x0041B490;
+int unk_sub_aiupdate = 0x0040EF30;
+bool bAppliedSpeedLimiterPatches = false;
+
+
+void __declspec(naked) ToggleAIControlCave()
+{
+	_asm
+	{
+		test bl, bl
+		movss dword ptr[edi + 0x1510], xmm0
+		jnz AIControlCaveExit2Label
+
+		mov ecx, edi
+		call UpdateWrongWay
+		mov ecx, edi
+		call unk_sub_aiupdate
+
+	AIControlCaveExit2Label:
+		mov al, bToggleAiControl
+		test al, al
+		jz AIControlCaveExitLabel
+		mov eax, [edi + 0x14AC]
+		lea ecx, [edi + 0x14AC]
+		call dword ptr[eax + 8]
+		neg al
+		sbb al, al
+		inc al
+		lea ecx, [edi + 0x14AC]
+		push bBeTrafficCar
+		push eax
+		mov eax, [edi + 0x14AC]
+		call dword ptr[eax + 0xC]
+		mov bToggleAiControl, 0
+		lea ebp, [edi + 0x14AC]
+
+	AIControlCaveExitLabel:
+		jmp AIControlCaveExit2
+
+	}
+}
+
+
+
+#endif
+
+#ifdef HAS_FOG_CTRL
+bVector3 FogColourPicker = {0.43, 0.41, 0.29};
+#endif
+
+void reshade::runtime::draw_gui_nfs()
+{
+	bool modified = false;
+
+	ImGui::TextUnformatted("NFS Tweak Menu");
+	ImGui::Separator();
+	ImGui::Checkbox("Draw FrontEnd", (bool*)DRAW_FENG_BOOL_ADDR);
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Front End", ImGuiTreeNodeFlags_None))
+	{
+#ifndef GAME_UG
+		if (ImGui::CollapsingHeader("Safe House", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::Checkbox("Unlock All Things", (bool*)UNLOCKALLTHINGS_ADDR);
+#ifndef OLD_NFS
+			ImGui::Checkbox("Car Guys Camera", (bool*)CARGUYSCAMERA_ADDR);
+#ifdef GAME_MW
+			if (*(int*)FEDATABASE_ADDR)
+			{
+				ImGui::InputInt("Player Cash", (int*)PLAYERCASH_POINTER, 1, 100, ImGuiInputTextFlags_None);
+				PlayerBin = *(unsigned char*)CURRENTBIN_POINTER;
+				if (ImGui::InputInt("Current Bin", (int*)&PlayerBin, 1, 100, ImGuiInputTextFlags_None))
+				{
+					*(unsigned char*)CURRENTBIN_POINTER = (PlayerBin & 0xFF);
+				}
+			}
+#else
+#ifndef GAME_UC
+			if (*(int*)FEMANAGER_INSTANCE_ADDR)
+			{
+				ImGui::InputInt("Player Cash", (int*)PLAYERCASH_POINTER, 1, 100, ImGuiInputTextFlags_None);
+				PlayerBin = *(unsigned char*)CURRENTBIN_POINTER;
+				if (ImGui::InputInt("Current Bin", (int*)&PlayerBin, 1, 100, ImGuiInputTextFlags_None))
+				{
+					*(unsigned char*)CURRENTBIN_POINTER = (PlayerBin & 0xFF);
+				}
+#ifdef GAME_CARBON
+				ImGui::InputInt("Player Rep", (int*)PLAYERREP_POINTER, 1, 100, ImGuiInputTextFlags_None);
+				ImGui::InputText("Profile Name", (char*)PROFILENAME_POINTER, 31); // figure out the actual size, I assume 31 due to the memory layout
+
+				ImGui::InputText("Crew Name", (char*)CREWNAME_POINTER, 15); // figure out the actual size, I assume 15 due to the memory layout
+				FeCarPosition = *(unsigned char*)CAR_FEPOSITION_POINTER;
+				sprintf(FeCarPosition_DisplayStr, "FeLocation: %s", FeCarPosition_Names[FeCarPosition]);
+				if (ImGui::InputInt(FeCarPosition_DisplayStr, (int*)&FeCarPosition, 1, 100, ImGuiInputTextFlags_None))
+				{
+					FeCarPosition %= CAR_FEPOSITION_COUNT;
+					if (FeCarPosition < 0)
+						FeCarPosition = CAR_FEPOSITION_COUNT - 1;
+					*(unsigned char*)CAR_FEPOSITION_POINTER = (FeCarPosition & 0xFF);
+				}
+#endif
+				ImGui::Separator();
+				ImGui::Text("User Profile pointer: 0x%X", USERPROFILE_POINTER);
+#ifdef GAME_PS
+				ImGui::Text("FECareer pointer: 0x%X", FECAREER_POINTER);
+#endif
+			}
+#else
+			if (*(int*)GMW2GAME_OBJ_ADDR)
+			{
+				ImGui::InputFloat("Player Cash Adjust", &CashToAward, 1.0, 1000.0, "%.1f", ImGuiInputTextFlags_CharsScientific);
+				if (ImGui::Button("Adjust Cash", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bDoAwardCash = true;
+				}
+			}
+#endif
+#endif
+#endif
+#ifdef GAME_UG2
+			if (ImGui::Button("Unlimited Casholaz", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				*(bool*)UNLIMITEDCASHOLAZ_ADDR = true;
+			}
+#endif
+	}
+#endif
+		if (ImGui::CollapsingHeader("Printfs", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::PushTextWrapPos();
+			ImGui::TextUnformatted("NOTE: This doesn't actually do anything in the release builds yet. Only controls the variable.");
+			ImGui::PopTextWrapPos();
+			ImGui::Checkbox("Screen Printf", (bool*)DOSCREENPRINTF_ADDR);
+			ImGui::Separator();
+		}
+#ifdef GAME_MW
+		ImGui::Checkbox("Test Career Customization", (bool*)TESTCAREERCUSTOMIZATION_ADDR);
+#endif
+		ImGui::Checkbox("Show All Cars in FE", (bool*)SHOWALLCARSINFE_ADDR);
+#ifndef OLD_NFS
+#ifdef GAME_CARBON
+		ImGui::Checkbox("Enable Debug Car Customize", (bool*)ENABLEDCC_ADDR);
+#endif
+#endif
+#ifndef GAME_UG
+#ifndef GAME_UC
+		if (ImGui::CollapsingHeader("Overlays", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::InputText("Manual overlay", CurrentOverlay, 128);
+			if (ImGui::Button("Switch to the manual", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+#ifdef NFS_MULTITHREAD
+				bDoOverlaySwitch = true;
+#else
+				SwitchOverlay(CurrentOverlay);
+#endif
+			}
+#ifdef GAME_MW
+			ImGui::Separator();
+			if (ImGui::CollapsingHeader("Loading Screen", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Loading", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Loading.fng");
+				if (ImGui::Button("Loading Controller", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Loading_Controller.fng");
+				ImGui::Separator();
+			}
+			if (ImGui::CollapsingHeader("Main Menu", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_IN_FRONTEND)
+					ImGui::TextUnformatted("WARNING: You're not in Front End. The game might crash if you use these.");
+				if (ImGui::Button("Main Menu", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("MainMenu.fng");
+				if (ImGui::Button("Main Menu Sub", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("MainMenu_Sub.fng");
+				if (ImGui::Button("Options", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Options.fng");
+				if (ImGui::Button("Quick Race Brief", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Quick_Race_Brief.fng");
+				if (ImGui::Button("Track Select", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Track_Select.fng");
+				ImGui::Separator();
+			}
+
+			if (ImGui::CollapsingHeader("Gameplay", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_RACING)
+					ImGui::TextUnformatted("WARNING: You're not in race mode. The game might crash if you use these.");
+				if (ImGui::Button("Pause Main", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Pause_Main.fng");
+				if (ImGui::Button("Pause Performance Tuning", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Pause_Performance_Tuning.fng");
+				if (ImGui::Button("World Map Main", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("WorldMapMain.fng");
+				if (ImGui::Button("Pause Options", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Pause_Options.fng");
+				if (ImGui::Button("InGame Reputation Overview", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("InGameReputationOverview.fng");
+				if (ImGui::Button("InGame Milestones", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("InGameMilestones.fng");
+				if (ImGui::Button("InGame Rival Challenge", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("InGameRivalChallenge.fng");
+				ImGui::Separator();
+			}
+			if (ImGui::CollapsingHeader("Career", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_IN_FRONTEND)
+					ImGui::TextUnformatted("WARNING: You're not in Front End. The game might crash if you use these.");
+				if (ImGui::Button("Safehouse Reputation Overview", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("SafehouseReputationOverview.fng");
+				if (ImGui::Button("Rap Sheet Overview", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("RapSheetOverview.fng");
+				if (ImGui::Button("Rap Sheet Rankings", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("RapSheetRankings.fng");
+				if (ImGui::Button("Rap Sheet Infractions", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("RapSheetInfractions.fng");
+				if (ImGui::Button("Rap Sheet Cost To State", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("RapSheetCostToState.fng");
+				if (ImGui::Button("Safehouse Rival Challenge", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("SafehouseRivalChallenge.fng");
+				if (ImGui::Button("Safehouse Milestones", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("SafehouseMilestones.fng");
+				if (ImGui::Button("BlackList", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("BlackList.fng");
+				if (ImGui::Button("Controller Unplugged", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("ControllerUnplugged.fng");
+				ImGui::Separator();
+			}
+			if (ImGui::CollapsingHeader("Customization (Must be in Customized Car Screen)", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_IN_FRONTEND)
+					ImGui::TextUnformatted("WARNING: You're not in Front End. The game might crash if you use these.");
+				if (ImGui::Button("My Cars Manager", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("MyCarsManager.fng");
+				if (ImGui::Button("Debug Car Customize", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_DebugCarCustomize.fng");
+				if (ImGui::Button("Customize Parts", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("CustomizeParts.fng");
+				if (ImGui::Button("Customize Parts BACKROOM", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("CustomizeParts_BACKROOM.fng");
+				if (ImGui::Button("Customize Category", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("CustomHUD.fng");
+				if (ImGui::Button("Custom HUD BACKROOM", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("CustomHUD_BACKROOM.fng");
+				if (ImGui::Button("Decals", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Decals.fng");
+				if (ImGui::Button("Decals BACKROOM", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Decals_BACKROOM.fng");
+				if (ImGui::Button("Numbers", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Numbers.fng");
+				if (ImGui::Button("Rims BACKROOM", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Rims_BACKROOM.fng");
+				ImGui::Separator();
+			}
+			if (ImGui::CollapsingHeader("Misc", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_IN_FRONTEND)
+					ImGui::TextUnformatted("WARNING: You're not in Front End. The game might crash if you use these.");
+				if (ImGui::Button("Keyboard", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Keyboard.fng");
+				if (ImGui::Button("LS LangSelect", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("LS_LangSelect.fng");
+				if (ImGui::Button("Loading Controller", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("Loading_Controller.fng");
+				if (ImGui::Button("UI_OptionsController", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OptionsController.fng");
+				ImGui::Separator();
+			}
+			if (ImGui::CollapsingHeader("Online (Must be in ONLINE connected)", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_IN_FRONTEND)
+					ImGui::TextUnformatted("WARNING: You're not in Front End. The game might crash if you use these.");
+				if (ImGui::Button("News and Terms", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_News_and_Terms.fng");
+				if (ImGui::Button("Lobby Room", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_LobbyRoom.fng");
+				if (ImGui::Button("Game Room", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLGameRoom.fng");
+				if (ImGui::Button("Game Room host", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_GameRoom_Dialog.fng");
+				if (ImGui::Button("Game Room client", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLGameRoom_client.fng");
+				if (ImGui::Button("Mode Select List", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_ModeSelectList.fng");
+				if (ImGui::Button("Online Main", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_MAIN.fng");
+				if (ImGui::Button("Quick Race Main", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_Quickrace_Main.fng");
+				if (ImGui::Button("Filters", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLFilters.fng");
+				if (ImGui::Button("OptiMatch Available", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLX_OptiMatch_Available.fng");
+				if (ImGui::Button("OptiMatch Filters", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLX_OptiMatch_Filters.fng");
+				if (ImGui::Button("Rankings Personal", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLRankings_Personal.fng");
+				if (ImGui::Button("Rankings Overall", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLRankings_Overall.fng");
+				if (ImGui::Button("Rankings Monthly", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLRankings_Monthly.fng");
+				if (ImGui::Button("Friend Dialogue", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_FriendDialogue.fng");
+				if (ImGui::Button("Feedback", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_Feedback.fng");
+				if (ImGui::Button("Voice Chat", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_VoiceChat.fng");
+				if (ImGui::Button("Auth DNAS", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLAuthDNAS.fng");
+				if (ImGui::Button("ISP Connect", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLISPConnect.fng");
+				if (ImGui::Button("Select Persona", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_SelectPersona.fng");
+				if (ImGui::Button("Create Account", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_Create_Account.fng");
+				if (ImGui::Button("Age Verification", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLAgeVerif.fng");
+				if (ImGui::Button("Age Too Young", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_OLAgeTooYoung.fng");
+				if (ImGui::Button("Use Existing", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("OL_UseExisting.fng");
+				if (ImGui::Button("Date Entry", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("UI_DateEntry.fng");
+				ImGui::Separator();
+			}
+			if (ImGui::CollapsingHeader("Memory Card", ImGuiTreeNodeFlags_None))
+			{
+				if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_IN_FRONTEND)
+					ImGui::TextUnformatted("WARNING: You're not in Front End. The game might crash if you use these.");
+				if (ImGui::Button("Profile Manager", ImVec2(ImGui::CalcItemWidth(), 0)))
+					SwitchOverlay("MC_ProfileManager.fng");
+				ImGui::Separator();
+			}
+#endif
+		}
+#endif
+#endif
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Career", ImGuiTreeNodeFlags_None))
+	{
+#ifdef GAME_UG2
+		ImGui::Checkbox("Shut Up Rachel", (bool*)SHUTUPRACHEL_ADDR);
+#endif
+#ifndef OLD_NFS
+		ImGui::Checkbox("Skip bin 15 intro", (bool*)SKIPCAREERINTRO_ADDR);
+#ifndef NFS_MULTITHREAD
+		ImGui::Checkbox("Skip DDay Races", (bool*)SKIPDDAYRACES_ADDR);
+#endif
+#endif
+#ifdef GAME_MW
+		if (!*(int*)GRACESTATUS_ADDR && *(unsigned char*)CURRENTBIN_POINTER >= 2)
+		{
+			sprintf(JumpToBinOptionText, "Jump to bin %d", *(unsigned char*)CURRENTBIN_POINTER - 1);
+			if (ImGui::Button(JumpToBinOptionText, ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				JumpToBin(*(unsigned char*)CURRENTBIN_POINTER - 1);
+			}
+		}
+		else
+		{
+			if (*(int*)GRACESTATUS_ADDR)
+			{
+				ImGui::Text("Can't jump to bin %d while racing. Go to FE to jump bins.", *(unsigned char*)CURRENTBIN_POINTER - 1);
+			}
+			if (*(unsigned char*)CURRENTBIN_POINTER < 2)
+			{
+				ImGui::Text("No more bins left to jump! You're at bin %d!", *(unsigned char*)CURRENTBIN_POINTER);
+			}
+		}
+#endif
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Teleport", ImGuiTreeNodeFlags_None))
+	{
+		ImGui::InputFloat("X", &TeleportPos.x, 0, 0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+		ImGui::InputFloat("Y", &TeleportPos.y, 0, 0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+		ImGui::InputFloat("Z", &TeleportPos.z, 0, 0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+		if (ImGui::Button("Engage!", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+			JumpToNewPos(&TeleportPos);
+		}
+		ImGui::Separator();
+
+#ifdef OLD_NFS
+#ifdef GAME_UG2
+		ImGui::TextUnformatted("Hot Position"); // TODO: maybe port over Hot Position from UG2 to UG1?
+		if (ImGui::Button("Save", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
+		{
+			*(bool*)SAVEHOTPOS_ADDR = true;
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Load", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
+		{
+			*(bool*)LOADHOTPOS_ADDR = true;
+		}
+		ImGui::Separator();
+#endif
+#else
+		ImGui::InputInt("Hot Position", &ActiveHotPos, 1, 1, ImGuiInputTextFlags_CharsDecimal);
+		if (ActiveHotPos <= 0)
+			ActiveHotPos = 1;
+		ActiveHotPos %= 6;
+		if (ImGui::Button("Save", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
+		{
+			*(int*)SAVEHOTPOS_ADDR = ActiveHotPos;
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Load", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
+		{
+			*(int*)LOADHOTPOS_ADDR = ActiveHotPos;
+		}
+		ImGui::Checkbox("Floor Snapping", &bTeleFloorSnap);
+		ImGui::Separator();
+#endif
+
+#ifdef GAME_UG
+		if (ImGui::CollapsingHeader("Landmarks (Underground 1 World) (L1RA)", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::TextUnformatted("Sorry, no landmarks for Underground 1 yet :("); // TODO: make landmarks for UG1 Free Roam (it's such a small map anyway...)
+		}
+		ImGui::Separator();
+#endif
+
+#ifdef GAME_UG2
+		if (ImGui::CollapsingHeader("Landmarks (Underground 2 World) (L4RA)", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Garage", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bVector3 pos = { 654.59, -102.02,   15.75 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::CollapsingHeader("Airport", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Terminal Station", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1871.38, -829.58,   34.08 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Parking Lot Front", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1831.13, -818.90,   24.08 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Parking Lot Behind", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1722.82, -795.87,   23.96 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("City Core", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Stadium Entrance", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1183.45, -646.81, 18.03 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Stadium Parking Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1016.02, -849.46, 17.99 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("South Market - Casino Fountain", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -326.62, -559.63, 19.95 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Fort Union Square", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 212.86, -438.44, 18.03 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Best Buy", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 485.37, -617.05, 18.08 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hotel Plaza", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -282.70, 81.08, 8.39 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hotel Plaza Fountain", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -433.37, -170.49, 25.98 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Convention Center", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -632.79, 59.24, 10.59 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Main Street", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -758.48, -176.86, 29.38 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Construction Road 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 148.85, -830.72, 17.52 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Construction Road 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 36.05, -27.53, 16.36 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Parking Garage", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 154.32, 404.37, 4.57 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Basketball Court", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 523.90, -783.58, 8.37 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hotel Plaza Parking Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -225.51, 315.23, 1.08 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Beacon Hill", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Parking Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -649.46, 585.84, 25.21 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Burger King", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1390.40, 199.50, 11.03 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Park & Boardwalk", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1638.55, 433.51, 4.35 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1170.94, 564.39, 30.19 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Back Alley Shortcut", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1260.51, 778.16, 48.05 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Restaurant Back Alley", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1004.35, 705.92, 35.82 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Zigzag Bottom", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1643.70, 690.86, 2.73 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Zigzag Top", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1463.39, 859.80, 42.42 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Bridge", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -381.70, 709.03, 26.12 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Pigeon Park", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Glass Garden", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -10.06, 827.62, 33.57 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Mansion", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 534.27, 988.52, 33.41 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Pavilion 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 376.73, 1170.13, 35.19 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Pavilion 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 207.75, 1335.30, 49.13 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("BBQ Restaurant", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -185.32, 1599.37, 43.84 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Fountain", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -124.09, 1519.45, 39.65 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Brad Lawless Memorial Statue", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -505.99, 1190.16, 47.18 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Jackson Heights", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Entrance Gate", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1494.47, 1047.15, 52.78 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Waterfall Bridge 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2126.07, 1651.40, 130.54 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Waterfall Bridge 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2648.50, 2240.41, 229.08 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Large Mansion", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -3085.82, 2334.12, 262.17 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Mansion 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -720.69, 1853.10, 154.16 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Observatory", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2067.00, 2794.99, 318.93 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Observatory Tunnel", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1499.79, 2219.02, 208.01 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Parking Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2024.93, 2587.49, 325.54 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Radio Tower", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1205.87, 3119.98, 375.72 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("City Vista", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2155.04, 2016.00, 218.18 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Coal Harbor", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Shipyard", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -687.03, -1433.25, 18.63 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Trainyard", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1031.52, -1782.72, 16.20 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -243.80, -1537.74, 13.95 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Trashyard", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1397.31, -1544.86, 13.85 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Refinery", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 253.64, -1886.44, 14.01 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("East Hwy Entrance", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 926.80, -1231.56, 14.07 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Highway", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Hwy 7 North ", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 305.70, -1681.59, 21.09 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hwy 7 South", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 859.69, -369.76, 18.73 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hwy 27 North", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 208.38, -1013.74, 25.98 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hwy 27 East", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1147.26, -270.31, 25.68 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hwy 27 South", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 69.73, 317.97, 11.17 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hwy 27 West", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1194.52, -212.97, 24.94 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Shops", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::CollapsingHeader("City Center Shops", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Car Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -728.10, -881.46,   18.11 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Performance", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1051.87, -147.84,   17.19 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("El Norte Performance", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 337.01, -756.14,   13.39 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Body", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -387.00,   37.17,   14.15 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("El Norte Body", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 479.72,  122.67,   10.16 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Graphics", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -278.93, -464.33,   20.14 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Specialty", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1267.26, -616.56,   19.93 };
+						JumpToNewPos(&pos);
+					}
+
+				}
+				if (ImGui::CollapsingHeader("Beacon Hill Shops", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Car Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -974.43,  413.24,   11.80 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Performance", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1306.92,  355.72,    9.27 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Body", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -994.29,  818.47,   39.12 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Graphics", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -491.38,  714.42,   29.13 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Specialty", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1456.41,  688.46,   24.16 };
+						JumpToNewPos(&pos);
+					}
+
+				}
+				if (ImGui::CollapsingHeader("Jackson Heights Shops", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Body", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1928.18, 1130.85,   61.72 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Graphics", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1886.35, 1157.29,   61.63 };
+						JumpToNewPos(&pos);
+					}
+
+				}
+				if (ImGui::CollapsingHeader("Coal Harbor Shops", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Car Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 37.30,-1718.94,   14.15 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("East Performance", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 840.05,-1404.39,    9.50 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("East Body", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -69.84,-1474.95,   13.92 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Graphics", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 456.23,-1553.53,   13.92 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("East Specialty", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 731.82,-1174.17,   13.57 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("West Performance", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -527.15,-1566.07,   13.93 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("West Body", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -546.54,-1893.46,    4.12 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("West Specialty", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1125.19,-1872.93,   13.92 };
+						JumpToNewPos(&pos);
+					}
+				}
+			}
+		}
+		ImGui::Separator();
+#endif
+#if defined(GAME_MW) || defined(GAME_CARBON)
+		if (ImGui::CollapsingHeader("Landmarks (Most Wanted World)", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Jump to Memory High Watermark", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bVector3 pos = { 1113.0, 3221.0, 394.0 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::CollapsingHeader("City Landmarks", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("East Park", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2085.00,  141.00,   98.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("West Park", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 709.00,  155.00,  115.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Stadium", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 934.00, -649.00,  116.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Time Square", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1452.05,  360.00,  101.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Little Italy", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2113.00,  322.00,  100.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Subway Entrance 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2147.00, 40.00, 94.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Subway Entrance 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 926.00, -556.00, 115.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Subway Entrance 3", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1819.00, 512.00, 94.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway North", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1819.00, 916.00, 124.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway South", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1972.00, -581.00, 105.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway East", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2515.00, 291.00, 93.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway West", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 499.00, 176.00, 108.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Safehouse", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2313.00, -70.00, 94.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Museum", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 885.00, 455.00, 113.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Amphitheatre", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 850.00, 246.00, 114.00 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Coastal Landmarks", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Coastal Safe House", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4254.00, 75.00, 11.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Coney Island", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4094.00, 166.00, 23.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Fish Market", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4629.00, 149.00, 7.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Oil Refinery", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3993.00, 2100.00, 28.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Fishing Village", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3693.00, 3516.00, 26.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Shipyard", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3107.00, 490.00, 18.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Trainyard", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2920.00, 175.00, 28.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Lighthouse", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4092.00, -173.00, 17.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Drive-in Theatre", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3144.00, 1661.00, 110.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3713.00, 3490.00, 27.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2749.00, 2159.00, 108.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 3", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3071.00, 1030.00, 67.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 4", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3836.00, 605.00, 25.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Trailer Park", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2871.00, 3004.00, 74.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Cannery", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3401.00, 2853.00, 12.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Fire Hall", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3878.00, 459.00, 23.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Amusement Park", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3944.00, 273.00, 17.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Boardwalk", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4542.00, 118.00, 6.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Prison", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4093.00, 1302.00, 45.00 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("College Landmarks", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("College Safe House", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1773.00, 2499.00, 150.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Rosewood Park", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 663.00, 4084.00, 210.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Golf Course", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2180.00, 3591.00, 165.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Campus", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1087.00, 3187.00, 202.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Main Street", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1606.00, 2210.00, 145.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Baseball Stadium", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 24.00, 3239.00, 195.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Club House", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2168.00, 3566.00, 162.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway North", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1830.00, 4288.00, 233.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway South", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1798.00, 2003.00, 152.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway East", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2259.00, 2616.00, 141.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Highway West", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -293.00, 3633.00, 207.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Toll Booth 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 378.00, 4502.00, 236.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Toll Booth 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1580.00, 1800.00, 168.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 1", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 822.00, 4500.00, 205.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 2", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1216.00, 3667.00, 201.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 3", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 549.00, 2622.00, 167.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 4", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1641.00, 2486.00, 152.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gas Station 5", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1990.00, 1640.00, 152.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Small Parking Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1057.00, 3826.00, 201.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Large Parking Lot", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1227.00, 3259.00, 204.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Tennis Court", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 729.00, 3540.00, 201.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Stadium", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 43.00, 3154.00, 189.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Cemetary", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 846.00, 2439.00, 151.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Hospital", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1419.00, 2613.00, 164.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Fire Hall", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1510.00, 2144.00, 146.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Donut Shop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1825.00, 1860.00, 151.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Clock Tower", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1683.00, 2114.00, 146.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Strip Mall", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2633.00, 2199.00, 108.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Overpass", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2155.00, 2642.00, 148.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Bus Station", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 2094.00, 1427.00, 152.00 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Shops", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("North College Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 713.00, 4507.00, 214.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("College Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1513.00, 2550.00, 158.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("College Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 990.00, 2164.00, 154.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("North City Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1863.00, 1193.00, 146.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("City Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1086.00, 54.00, 101.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("City Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1762.00, 529.00, 93.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("South City Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3410.00, -203.00, 14.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("North Coastal Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3611.00, 3636.00, 31.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Refinery Coastal Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3467.00, 2019.00, 77.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Coastal Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4200.00, 1276.00, 48.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Coastal Chop", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4234.00, 714.00, 56.00 };
+					JumpToNewPos(&pos);
+				}
+			}
+		}
+		ImGui::Separator();
+		if (ImGui::CollapsingHeader("Landmarks (Carbon World)", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::CollapsingHeader("Landmarks", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Tuner", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1912.00, 1363.00, 109.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Exotic", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 1175.00, 472.00, 60.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Casino", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 4794.00, 2040.00, 101.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Muscle", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3776.00, -1341.00, 12.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Santa Fe", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2088.00, 1942.00, -6.00 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Palmont Motor Speedway (drift track)", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -1131.29, 7754.64, 1.14 };
+					JumpToNewPos(&pos);
+				}
+			}
+			if (ImGui::CollapsingHeader("Pursuit Breakers", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::CollapsingHeader("Casino", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Casino Archway", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 3993.00, 3459.00, 208.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Casino Gas Homes", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 3909.00, 2844.00, 150.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Casino Donut", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 5271.00, 2119.00, 102.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Casino Motel", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 4840.00, 3364.00, 140.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Casino Petro", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 5351.00, 3426.00, 117.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Casino Scaffold", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 4041.00, 2419.00, 130.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Casino Gas Commercial", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 4281.00, 2152.00, 112.00 };
+						JumpToNewPos(&pos);
+					}
+				}
+				if (ImGui::CollapsingHeader("Muscle", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Muscle Facade", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 2763.00, -602.00, 17.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Muscle Ice Cream", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 2889.00, -1361.00, 4.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Muscle Tire", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 4403.00, -32.00, 37.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Muscle Dock Crane", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 2770.00, -612.00, 17.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Muscle Gas", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 4773.00, -780.00, 27.00 };
+						JumpToNewPos(&pos);
+					}
+				}
+				if (ImGui::CollapsingHeader("Santa Fe", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Santa Fe Scaffold", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -2416.00, 1997.00, 11.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Santa Fe Sculpture", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1854.00, 1891.00, 7.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Santa Fe Gas", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -2374.00, 1797.00, -5.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Santa Fe Thunderbird", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { -1967.00, 1695.00, 2.00 };
+						JumpToNewPos(&pos);
+					}
+				}
+				if (ImGui::CollapsingHeader("Tuner", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::Button("Tuner Gate A", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 4180.00, 588.00, 48.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Tuner Gate B", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 3883.00, 689.00, 32.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Tuner Gas Park", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 5286.00, 1524.00, 68.00 };
+						JumpToNewPos(&pos);
+					}
+					if (ImGui::Button("Tuner Gas Financial", ImVec2(ImGui::CalcItemWidth(), 0)))
+					{
+						bVector3 pos = { 5563.00, 683.00, 57.00 };
+						JumpToNewPos(&pos);
+					}
+				}
+			}
+			if (ImGui::CollapsingHeader("Canyons", ImGuiTreeNodeFlags_None))
+			{
+				if (ImGui::Button("Eternity Pass", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -6328.50, 12952.43, 942.69 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Journeyman's Bane", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -3256.09, 9614.98, 721.28 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Knife's Edge", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -2498.47, 6215.55, 787.85 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Lookout Point", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 3471.10, 10693.66, 602.65 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Devil's Creek Pass", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 7381.51, 11080.98, 598.47 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Lofty Heights Downhill", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -3253.87, 12843.19, 723.47 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Desparation Ridge", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -703.21, 12999.49, 888.32 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Deadfall Junction", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 8139.83, 9541.43, 889.62 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Copper Ridge", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { -7013.55, 6217.82,  787.86 };
+					JumpToNewPos(&pos);
+				}
+				if (ImGui::Button("Gold Valley Run", ImVec2(ImGui::CalcItemWidth(), 0)))
+				{
+					bVector3 pos = { 5224.52, 8066.35,  496.12 };
+					JumpToNewPos(&pos);
+				}
+			}
+		}
+#endif
+#ifdef GAME_PS
+		if (ImGui::Button("Speed Challenge", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+			bCalledProStreetTele = true;
+			bVector3 pos = { 0.0,   5000.0,  5.0 };
+			JumpToNewPos(&pos);
+		}
+		if (ImGui::CollapsingHeader("Landmarks (Ebisu)", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Ebisu West", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { -54.0,   -5.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::Button("Ebisu South", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { -34.0,   240.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::Button("Ebisu Touge", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { -255.0,   728.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+		}
+		if (ImGui::CollapsingHeader("Landmarks (Autopolis)", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Autopolis Main", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { 40.0, 0,  2.0 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::Button("Autopolis Lakeside", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { 300.0, -150.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+		}
+		if (ImGui::CollapsingHeader("Landmarks (Willow Springs)", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Willow Springs HorseThief", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { -332.0, 731.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::Button("Willow Springs GP", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { -73.0, 6.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+			if (ImGui::Button("Willow Springs Street", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				bCalledProStreetTele = true;
+				bVector3 pos = { 236.0, 569.0,  5.0 };
+				JumpToNewPos(&pos);
+			}
+		}
+#endif
+#ifdef GAME_UC
+		if (ImGui::CollapsingHeader("Landmarks (Undercover / MW2 World)", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::TextUnformatted("Sorry, no landmarks for Undercover / MW2 yet :("); // TODO: make / rip landmarks for MW2 Free Roam
+		}
+#endif
+	}
+	ImGui::Separator();
+#ifndef OLD_NFS
+	if (ImGui::CollapsingHeader("Race", ImGuiTreeNodeFlags_None))
+	{
+#ifdef GAME_CARBON
+		if (*(int*)FORCEFAKEBOSS_ADDR >= FAKEBOSS_COUNT || *(int*)FORCEFAKEBOSS_ADDR < 0)
+			sprintf(BossNames_DisplayStr, "Force Fake Boss: %s", "Unknown");
+		else
+			sprintf(BossNames_DisplayStr, "Force Fake Boss: %s", BossNames[*(int*)FORCEFAKEBOSS_ADDR]);
+		ImGui::InputInt(BossNames_DisplayStr, (int*)FORCEFAKEBOSS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+#endif
+		if (ImGui::Button("Force Finish", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+			ForceFinishRace();
+		}
+	}
+	ImGui::Separator();
+#endif
+	if (ImGui::CollapsingHeader("AI", ImGuiTreeNodeFlags_None))
+	{
+#ifndef OLD_NFS
+		if (ImGui::CollapsingHeader("Car Watches", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::InputInt("Current car", (int*)MTOGGLECAR_ADDR, 1, 1, ImGuiInputTextFlags_None);
+#ifdef NFS_MULTITHREAD
+#ifdef HAS_COPS
+			if (ImGui::Button("Watch Cop Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				CarTypeToWatch = CARLIST_TYPE_COP;
+				bDoTriggerWatchCar = true;
+			}
+			if (ImGui::Button("Watch Traffic Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				CarTypeToWatch = CARLIST_TYPE_TRAFFIC;
+				bDoTriggerWatchCar = true;
+			}
+#endif
+			if (ImGui::Button("Watch Racer Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				CarTypeToWatch = CARLIST_TYPE_AIRACER;
+				bDoTriggerWatchCar = true;
+			}
+#else
+#ifdef HAS_COPS
+			if (ImGui::Button("Watch Cop Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				TriggerWatchCar(CARLIST_TYPE_COP);
+			}
+			if (ImGui::Button("Watch Traffic Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				TriggerWatchCar(CARLIST_TYPE_TRAFFIC);
+			}
+#endif
+			if (ImGui::Button("Watch Racer Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				TriggerWatchCar(CARLIST_TYPE_AIRACER);
+			}
+#endif
+			ImGui::Separator();
+		}
+		if (ImGui::Button("Toggle AI Control", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+#ifdef NFS_MULTITHREAD
+			bToggleAiControl = !bToggleAiControl;
+#else
+			* (bool*)TOGGLEAICONTROL_ADDR = !*(bool*)TOGGLEAICONTROL_ADDR;
+#endif
+		}
+#ifdef GAME_UC
+		ImGui::Checkbox("Be a traffic car (after toggle)", &bBeTrafficCar);
+#endif
+#endif
+#ifdef HAS_COPS
+#ifdef GAME_MW
+		ImGui::Checkbox("Show Non-Pursuit Cops (Minimap)", (bool*)MINIMAP_SHOWNONPURSUITCOPS_ADDR);
+		ImGui::Checkbox("Show Pursuit Cops (Minimap)", (bool*)MINIMAP_SHOWPURSUITCOPS_ADDR);
+#endif
+		if (ImGui::InputFloat("Set Heat", &DebugHeat, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific))
+		{
+			TriggerSetHeat();
+		}
+		ImGui::Checkbox("Also set heat to save file", &bSetFEDBHeat);
+#ifdef GAME_UC
+		bDisableCops = !*(bool*)ENABLECOPS_ADDR;
+		if (ImGui::Checkbox("No Cops", &bDisableCops))
+			*(bool*)ENABLECOPS_ADDR = !bDisableCops;
+#else
+		ImGui::Checkbox("No Cops", (bool*)DISABLECOPS_ADDR);
+#endif
+		ImGui::Checkbox("AI Random Turns", (bool*)AI_RANDOMTURNS_ADDR);
+#endif
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_None))
+	{
+#ifndef OLD_NFS
+#ifndef GAME_MW
+		ImGui::Checkbox("SmartLookAheadCamera", (bool*)SMARTLOOKAHEADCAMERA_ADDR);
+#endif
+#endif
+#ifdef OLD_NFS
+		ImGui::Checkbox("Debug Cameras Enabled", (bool*)DEBUGCAMERASENABLED_ADDR);
+#endif
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Car", ImGuiTreeNodeFlags_None))
+	{
+#ifndef OLD_NFS
+		ImGui::PushTextWrapPos();
+		ImGui::TextUnformatted("WARNING: Car changing is unstable and may cause the game to crash!");
+		if (*(int*)GAMEFLOWMGR_STATUS_ADDR != GAMEFLOW_STATE_RACING)
+			ImGui::TextUnformatted("WARNING: You're not in race mode. The game might crash if you use these.");
+		ImGui::PopTextWrapPos();
+		ImGui::Separator();
+		if (ImGui::Button("Change Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+			*(bool*)CHANGEPLAYERVEHICLE_ADDR = true;
+		}
+		if (ImGui::Button("Flip Car", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+#ifdef NFS_MULTITHREAD
+			bDoFlipCar = true;
+#else
+			FlipCar();
+#endif
+		}
+#ifdef GAME_CARBON
+		ImGui::Checkbox("Augmented Drift With EBrake", (bool*)AUGMENTEDDRIFT_ADDR);
+#endif
+#endif
+#ifndef OLD_NFS
+#ifdef GAME_MW
+		ImGui::Checkbox("Infinite NOS", (bool*)INFINITENOS_ADDR);
+#else
+		ImGui::Checkbox("Infinite NOS", &bInfiniteNOS);
+#endif
+#ifndef GAME_PS
+		ImGui::Checkbox("Infinite RaceBreaker", (bool*)INFINITERACEBREAKER_ADDR);
+#else
+		if (*(int*)0x0040BE15 == 0)
+			bAppliedSpeedLimiterPatches = true;
+		if (bAppliedSpeedLimiterPatches)
+		{
+			if (ImGui::Button("Revive Top Speed Limiter", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				UndoSpeedLimiterPatches();
+				bAppliedSpeedLimiterPatches = false;
+			}
+		}
+		else
+		{
+			if (ImGui::Button("Kill Top Speed Limiter", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				ApplySpeedLimiterPatches();
+				bAppliedSpeedLimiterPatches = true;
+			}
+		}
+		if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_RACING)
+		{
+			ImGui::PushTextWrapPos();
+			ImGui::TextUnformatted("NOTE: Top speed patches will take effect after reloading the track! (Go to FrontEnd and back)");
+			ImGui::PopTextWrapPos();
+		}
+#endif
+#endif
+
+	}
+
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("GameFlow", ImGuiTreeNodeFlags_None))
+	{
+		ImGui::PushTextWrapPos();
+		ImGui::TextUnformatted("WARNING: This feature is still experimental! The game may crash unexpectedly!\nLoad a save profile to avoid any bugs.");
+#ifdef OLD_NFS
+		ImGui::TextUnformatted("WARNING: You are running NFSU or NFSU2. Please use SkipFE features instead.");
+#endif
+		ImGui::PopTextWrapPos();
+		ImGui::Separator();
+		ImGui::Text("Current Track: %d", *(int*)SKIPFETRACKNUM_ADDR);
+		ImGui::InputInt("Track Number", &SkipFETrackNum, 1, 100, ImGuiInputTextFlags_None);
+		ImGui::Separator();
+
+		if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_IN_FRONTEND)
+		{
+			if (ImGui::Button("Start Track", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+
+#if defined GAME_PS || defined GAME_UC
+				bDoFEUnloading = true;
+#else
+				*(int*)SKIPFETRACKNUM_ADDR = SkipFETrackNum;
+				GameFlowManager_UnloadFrontend((void*)GAMEFLOWMGR_ADDR);
+#endif
+			}
+		}
+		if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_RACING)
+		{
+			if (ImGui::Button("Start Track (in game - it may not work, goto FE first)", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+#ifdef NFS_MULTITHREAD
+				bDoLoadRegion = true;
+#else
+				* (int*)SKIPFETRACKNUM_ADDR = SkipFETrackNum;
+				GameFlowManager_LoadRegion((void*)GAMEFLOWMGR_ADDR);
+#endif
+			}
+#ifndef GAME_UC
+			if (ImGui::Button("Unload Track (Go to FrontEnd)", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+#ifdef NFS_MULTITHREAD
+				bDoTrackUnloading = true;
+#else
+#ifdef GAME_MW
+				BootFlowManager_Init(); // otherwise crashes without it in MW...
+#endif
+				GameFlowManager_UnloadTrack((void*)GAMEFLOWMGR_ADDR);
+#endif
+			}
+#endif
+		}
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("SkipFE", ImGuiTreeNodeFlags_None))
+	{
+		ImGui::Checkbox("SkipFE Status", (bool*)SKIPFE_ADDR);
+		ImGui::Text("Current Track: %d", *(int*)SKIPFETRACKNUM_ADDR);
+		ImGui::Separator();
+		if (ImGui::CollapsingHeader("Track Settings", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			ImGui::InputInt("Track Number", &SkipFETrackNum, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::Checkbox("Track Reverse Direction", (bool*)SKIPFE_TRACKDIRECTION_ADDR);
+			ImGui::InputInt("Num Laps", (int*)SKIPFE_NUMLAPS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+#ifndef OLD_NFS
+#ifdef GAME_MW
+			ImGui::InputText("Race ID", (char*)SKIPFE_RACEID_ADDR, 15);
+#else
+			if (ImGui::InputText("Race ID", SkipFERaceID, 64))
+				*(char**)SKIPFE_RACEID_ADDR = SkipFERaceID;
+#endif
+#ifdef GAME_PS
+			if (ImGui::InputText("Force Hub Selection Set", SkipFEForceHubSelectionSet, 64))
+				*(char**)SKIPFE_FORCEHUBSELECTIONSET_ADDR = SkipFEForceHubSelectionSet;
+			if (ImGui::InputText("Force Race Selection Set", SkipFEForceRaceSelectionSet, 64))
+				*(char**)SKIPFE_FORCERACESELECTIONSET_ADDR = SkipFEForceRaceSelectionSet;
+#endif
+#endif
+		}
+		if (ImGui::CollapsingHeader("AI Settings", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::InputInt("Num AI Cars", (int*)SKIPFE_NUMAICARS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::SliderInt("Difficulty", (int*)SKIPFE_DIFFICULTY_ADDR, 0, 2);
+#ifdef OLD_NFS
+			ImGui::InputInt("Force All AI Cars To Type", (int*)SKIPFE_FORCEALLAICARSTOBETHISTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Force AI Car 1 To Type", (int*)SKIPFE_FORCEAICAR1TOBETHISTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Force AI Car 2 To Type", (int*)SKIPFE_FORCEAICAR2TOBETHISTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Force AI Car 3 To Type", (int*)SKIPFE_FORCEAICAR3TOBETHISTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+#ifdef GAME_UG2
+			ImGui::InputInt("Force AI Car 4 To Type", (int*)SKIPFE_FORCEAICAR4TOBETHISTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Force AI Car 5 To Type", (int*)SKIPFE_FORCEAICAR5TOBETHISTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+#endif
+			ImGui::SliderFloat("Force All AI Cars to Perf Rating", (float*)SKIPFE_FORCEALLAICARSTOPERFRATING_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+			ImGui::SliderFloat("Force AI Car 1 to Perf Rating", (float*)SKIPFE_FORCEAICAR1TOPERFRATING_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+			ImGui::SliderFloat("Force AI Car 2 to Perf Rating", (float*)SKIPFE_FORCEAICAR2TOPERFRATING_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+			ImGui::SliderFloat("Force AI Car 3 to Perf Rating", (float*)SKIPFE_FORCEAICAR3TOPERFRATING_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+#ifdef GAME_UG2
+			ImGui::SliderFloat("Force AI Car 4 to Perf Rating", (float*)SKIPFE_FORCEAICAR4TOPERFRATING_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+			ImGui::SliderFloat("Force AI Car 5 to Perf Rating", (float*)SKIPFE_FORCEAICAR5TOPERFRATING_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+#endif
+#else
+#ifdef GAME_MW
+			if (ImGui::InputText("Opponent Preset Ride", SkipFEOpponentPresetRide, 64))
+			{
+				*(char**)SKIPFE_OPPONENTPRESETRIDE_ADDR = SkipFEOpponentPresetRide;
+			}
+#elif GAME_CARBON
+			ImGui::Checkbox("No Wingman", (bool*)SKIPFE_NOWINGMAN_ADDR);
+			if (ImGui::InputText("Wingman Preset Ride", SkipFEWingmanPresetRide, 64))
+				*(char**)SKIPFE_WINGMANPRESETRIDE_ADDR = SkipFEWingmanPresetRide;
+			if (ImGui::InputText("Opponent 1 Preset Ride", SkipFEOpponentPresetRide0, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE0_ADDR = SkipFEOpponentPresetRide0;
+			if (ImGui::InputText("Opponent 2 Preset Ride", SkipFEOpponentPresetRide1, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE1_ADDR = SkipFEOpponentPresetRide1;
+			if (ImGui::InputText("Opponent 3 Preset Ride", SkipFEOpponentPresetRide2, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE2_ADDR = SkipFEOpponentPresetRide2;
+			if (ImGui::InputText("Opponent 4 Preset Ride", SkipFEOpponentPresetRide3, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE3_ADDR = SkipFEOpponentPresetRide3;
+			if (ImGui::InputText("Opponent 5 Preset Ride", SkipFEOpponentPresetRide4, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE4_ADDR = SkipFEOpponentPresetRide4;
+			if (ImGui::InputText("Opponent 6 Preset Ride", SkipFEOpponentPresetRide5, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE5_ADDR = SkipFEOpponentPresetRide5;
+			if (ImGui::InputText("Opponent 7 Preset Ride", SkipFEOpponentPresetRide6, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE6_ADDR = SkipFEOpponentPresetRide6;
+			if (ImGui::InputText("Opponent 8 Preset Ride", SkipFEOpponentPresetRide7, 64))
+				*(char**)SKIPFE_OPPONENTPRESETRIDE7_ADDR = SkipFEOpponentPresetRide7;
+#endif
+#endif
+		}
+#ifdef HAS_COPS
+		if (ImGui::CollapsingHeader("Cop Settings", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::InputInt("Max Cops", (int*)SKIPFE_MAXCOPS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::Checkbox("Helicopter", (bool*)SKIPFE_HELICOPTER_ADDR);
+			ImGui::Checkbox("Disable Cops", (bool*)SKIPFE_DISABLECOPS_ADDR);
+		}
+#endif
+		if (ImGui::CollapsingHeader("Traffic Settings", ImGuiTreeNodeFlags_None))
+		{
+#ifndef GAME_UC
+#ifdef OLD_NFS
+			ImGui::SliderInt("Traffic Density", (int*)SKIPFE_TRAFFICDENSITY_ADDR, 0, 3);
+#else
+			ImGui::SliderFloat("Traffic Density", (float*)SKIPFE_TRAFFICDENSITY_ADDR, 0.0, 100.0, "%.3f", ImGuiSliderFlags_None);
+#endif
+#ifndef GAME_UG2
+			ImGui::SliderFloat("Traffic Oncoming", (float*)SKIPFE_TRAFFICONCOMING_ADDR, 0.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+#endif
+#endif
+#ifndef OLD_NFS
+			ImGui::Checkbox("Disable Traffic", (bool*)SKIPFE_DISABLETRAFFIC_ADDR);
+#endif
+		}
+		if (ImGui::CollapsingHeader("Game Settings", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::Checkbox("Force Point2Point Mode", (bool*)SKIPFE_P2P_ADDR);
+#ifdef GAME_PS
+			ImGui::Checkbox("Practice Mode", (bool*)SKIPFE_PRACTICEMODE_ADDR);
+#endif
+#ifdef OLD_NFS
+			ImGui::Checkbox("Force Drag Mode", (bool*)SKIPFE_DRAGRACE_ADDR);
+			ImGui::Checkbox("Force Drift Mode", (bool*)SKIPFE_DRIFTRACE_ADDR);
+#ifdef GAME_UG2
+			ImGui::Checkbox("Force Team Drift Mode", (bool*)SKIPFE_DRIFTRACETEAMED_ADDR);
+			ImGui::Checkbox("Force Burnout Mode", (bool*)SKIPFE_BURNOUTRACE_ADDR);
+			ImGui::Checkbox("Force Short Track Mode", (bool*)SKIPFE_SHORTTRACK_ADDR);
+			ImGui::InputFloat("Rolling Start Speed", (float*)SKIPFE_ROLLINGSTART_SPEED, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#else
+			ImGui::Checkbox("Force Be A Cop Mode", (bool*)SKIPFE_BEACOP_ADDR);
+#endif
+#endif
+			if (*(int*)SKIPFE_RACETYPE_ADDR >= kRaceContext_Count || *(int*)SKIPFE_RACETYPE_ADDR < 0)
+				sprintf(SkipFERaceTypeDisplay, "Race Type: %s", "Unknown");
+			else
+				sprintf(SkipFERaceTypeDisplay, "Race Type: %s", GRaceContextNames[*(int*)SKIPFE_RACETYPE_ADDR]);
+			ImGui::InputInt(SkipFERaceTypeDisplay, (int*)SKIPFE_RACETYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Num Player Cars", (int*)SKIPFE_NUMPLAYERCARS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+#ifndef OLD_NFS
+#ifdef GAME_PS
+			ImGui::InputInt("Num Player Screens", (int*)SKIPFE_NUMPLAYERSCREENS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			if (ImGui::InputText("Force NIS", SkipFEForceNIS, 64))
+				*(char**)SKIPFE_FORCENIS_ADDR = SkipFEForceNIS;
+			if (ImGui::InputText("Force NIS Context", SkipFEForceNISContext, 64))
+				*(char**)SKIPFE_FORCENISCONTEXT_ADDR = SkipFEForceNISContext;
+			ImGui::Checkbox("Enable Debug Activity", (bool*)SKIPFE_ENABLEDEBUGACTIVITY_ADDR);
+			ImGui::Checkbox("Disable Smoke", (bool*)SKIPFE_DISABLESMOKE_ADDR);
+			ImGui::Checkbox("Slot Car Race", (bool*)SKIPFE_SLOTCARRACE_ADDR);
+#else
+#ifndef GAME_UC
+			ImGui::Checkbox("Split screen mode", (bool*)SKIPFE_SPLITSCREEN_ADDR);
+#endif
+#endif
+#endif
+		}
+		if (ImGui::CollapsingHeader("Car Settings", ImGuiTreeNodeFlags_None))
+		{
+#ifdef OLD_NFS
+			ImGui::InputInt("Default Player 1 Car Type", (int*)SKIPFE_DEFAULTPLAYER1CARTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Default Player 2 Car Type", (int*)SKIPFE_DEFAULTPLAYER2CARTYPE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Default Player 1 Skin Index", (int*)SKIPFE_DEFAULTPLAYER1SKININDEX_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Default Player 2 Skin Index", (int*)SKIPFE_DEFAULTPLAYER2SKININDEX_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::SliderInt("Player Car Upgrade Level", (int*)SKIPFE_PLAYERCARUPGRADEALL_ADDR, -1, 3);
+#ifdef GAME_UG2
+			ImGui::InputInt("Force Player 1 Start Position", (int*)SKIPFE_FORCEPLAYER1STARTPOS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+			ImGui::InputInt("Force Player 2 Start Position", (int*)SKIPFE_FORCEPLAYER2STARTPOS_ADDR, 1, 100, ImGuiInputTextFlags_None);
+#endif
+#else
+			if (ImGui::InputText("Player Car", SkipFEPlayerCar, 128))
+			{
+				*(char**)SKIPFE_PLAYERCAR_ADDR = SkipFEPlayerCar;
+			}
+			if (ImGui::InputText("Player Car 2", SkipFEPlayerCar2, 128))
+			{
+				*(char**)SKIPFE_PLAYERCAR2_ADDR = SkipFEPlayerCar2;
+			}
+#ifdef GAME_PS
+			if (ImGui::InputText("Player Car 3", SkipFEPlayerCar3, 128))
+			{
+				*(char**)SKIPFE_PLAYERCAR3_ADDR = SkipFEPlayerCar3;
+			}
+			if (ImGui::InputText("Player Car 4", SkipFEPlayerCar4, 128))
+			{
+				*(char**)SKIPFE_PLAYERCAR4_ADDR = SkipFEPlayerCar4;
+			}
+			if (ImGui::InputText("Turbo SFX", SkipFETurboSFX, 128))
+			{
+				*(char**)SKIPFE_TURBOSFX_ADDR = SkipFETurboSFX;
+			}
+			ImGui::InputInt("Transmission Setup", (int*)SKIPFE_TRANSMISSIONSETUP_ADDR, 1, 100);
+			if (ImGui::CollapsingHeader("Driver Aids", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::SliderInt("Traction Control Level", (int*)SKIPFE_TRACTIONCONTROLLEVEL_ADDR, -1, 4);
+				ImGui::SliderInt("Stability Control Level", (int*)SKIPFE_STABILITYCONTROLLEVEL_ADDR, -1, 3);
+				ImGui::SliderInt("ABS Level", (int*)SKIPFE_ANTILOCKBRAKESLEVEL_ADDR, -1, 3);
+				ImGui::SliderInt("Drift Steering", (int*)SKIPFE_DRIFTASSISTLEVEL_ADDR, -1, 10);
+				ImGui::SliderInt("Raceline Assist", (int*)SKIPFE_RACELINEASSISTLEVEL_ADDR, -1, 20);
+				ImGui::SliderInt("Braking Assist", (int*)SKIPFE_BRAKINGASSISTLEVEL_ADDR, -1, 20);
+			}
+
+#endif
+#ifdef GAME_CARBON
+			if (ImGui::InputText("Player Preset Ride", SkipFEPlayerPresetRide, 64))
+				*(char**)SKIPFE_PLAYERPRESETRIDE_ADDR = SkipFEPlayerPresetRide;
+#endif
+			ImGui::SliderFloat("Player Car Performance", (float*)SKIPFE_PLAYERPERFORMANCE_ADDR, -1.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+#endif
+		}
+		ImGui::Separator();
+		if (ImGui::Button("Start SkipFE Race", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+			*(int*)SKIPFETRACKNUM_ADDR2 = SkipFETrackNum;
+			*(int*)SKIPFE_ADDR = 1;
+#if defined(GAME_MW) || defined(OLD_NFS)
+			OnlineEnabled_OldState = *(bool*)ONLINENABLED_ADDR;
+			*(int*)ONLINENABLED_ADDR = 0;
+#endif
+			RaceStarter_StartSkipFERace();
+#if defined(GAME_MW) || defined(OLD_NFS)
+			*(int*)ONLINENABLED_ADDR = OnlineEnabled_OldState;
+#endif
+		}
+	}
+	ImGui::Separator();
+	if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_None))
+	{
+#ifdef GAME_UC
+		if (ImGui::Checkbox("Motion Blur", &bMotionBlur))
+		{
+			modified = true;
+		}
+		ImGui::SliderFloat("Bloom Scale", (float*)0x00D5E154, -10.0, 10.0, "%.3f", ImGuiSliderFlags_None);
+#endif
+#ifndef OLD_NFS
+#ifdef GAME_PS
+		ImGui::InputFloat("Game Speed", &GameSpeed, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#else
+		ImGui::InputFloat("Game Speed", (float*)GAMESPEED_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+		ImGui::Checkbox("Visual Look Filter", (bool*)APPLYVISUALLOOK_ADDR);
+#endif
+		ImGui::InputInt(PrecullerModeNames[*(int*)PRECULLERMODE_ADDR], (int*)PRECULLERMODE_ADDR, 1, 100, ImGuiInputTextFlags_None);
+		*(int*)PRECULLERMODE_ADDR %= 4;
+		if (*(int*)PRECULLERMODE_ADDR < 0)
+			*(int*)PRECULLERMODE_ADDR = 3;
+#endif
+#ifdef GAME_UG2
+		ImGui::Checkbox("Draw Cars", (bool*)DRAWCARS_ADDR);
+		ImGui::Checkbox("Draw Car Reflections", (bool*)DRAWCARSREFLECTIONS_ADDR);
+		ImGui::Checkbox("Draw Light Flares", (bool*)DRAWLIGHTFLARES_ADDR);
+		ImGui::Checkbox("Draw Fancy Car Shadows", (bool*)DRAWFANCYCARSHADOW_ADDR);
+		ImGui::InputFloat("Fancy Car Shadow Edge Mult.", (float*)FANCYCARSHADOWEDGEMULT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+		ImGui::InputFloat("Wheel Pivot Translation Amount", (float*)WHEELPIVOTTRANSLATIONAMOUNT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+		ImGui::InputFloat("Wheel Standard Width", (float*)WHEELSTANDARDWIDTH_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+
+		if (ImGui::CollapsingHeader("Precipitation & Weather", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::Checkbox("Precipitation Enable", (bool*)PRECIPITATION_ENABLE_ADDR);
+			ImGui::Checkbox("Precipitation Render", (bool*)PRECIPITATION_RENDER_ADDR);
+			ImGui::Checkbox("Precipitation Debug Enable", (bool*)PRECIPITATION_DEBUG_ADDR);
+			ImGui::Separator();
+			ImGui::TextUnformatted("Values");
+			if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Precipitation Percentage", (float*)PRECIPITATION_PERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Bound X", (float*)PRECIP_BOUNDX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Bound Y", (float*)PRECIP_BOUNDY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Bound Z", (float*)PRECIP_BOUNDZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Ahead X", (float*)PRECIP_AHEADX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Ahead Y", (float*)PRECIP_AHEADY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Ahead Z", (float*)PRECIP_AHEADZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Weather Change", (float*)PRECIP_WEATHERCHANGE_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Drive Factor", (float*)PRECIP_DRIVEFACTOR_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Prevailing Multiplier", (float*)PRECIP_PREVAILINGMULT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::Checkbox("Always Raining", (bool*)PRECIP_CHANCE100_ADDR);
+				ImGui::InputInt("Rain Type (restart world to see diff.)", &GlobalRainType, 1, 100, ImGuiInputTextFlags_None);
+			}
+			if (ImGui::CollapsingHeader("Wind", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Wind Angle", (float*)PRECIP_WINDANG_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Max Sway", (float*)PRECIP_SWAYMAX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Max Wind Effect", (float*)PRECIP_MAXWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Road Dampness", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Base Dampness", (float*)PRECIP_BASEDAMPNESS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Uber Dampness", (float*)PRECIP_UBERDAMPNESS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("On-screen FX", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::Checkbox("OverRide Enable", (bool*)PRECIP_ONSCREEN_OVERRIDE_ADDR);
+				ImGui::InputFloat("Drip Speed", (float*)PRECIP_ONSCREEN_DRIPSPEED_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Speed Mod", (float*)PRECIP_ONSCREEN_SPEEDMOD_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::Checkbox("Fog Control OverRide", (bool*)FOG_CTRLOVERRIDE_ADDR);
+				ImGui::InputFloat("Precip. Fog Percentage", (float*)PRECIP_FOGPERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Falloff", (float*)BASEFOG_FALLOFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Falloff X", (float*)BASEFOG_FALLOFFX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Falloff Y", (float*)BASEFOG_FALLOFFY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Weather Fog", (float*)BASEWEATHER_FOG_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Weather Fog Start", (float*)BASEWEATHER_FOG_START_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				if (ImGui::CollapsingHeader("Base Weather Fog Colour", ImGuiTreeNodeFlags_None))
+				{
+					if (ImGui::ColorPicker3("", (float*)&(FogColourPicker.x), ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_PickerHueWheel))
+					{
+						*(int*)BASEWEATHER_FOG_COLOUR_R_ADDR = (int)(FogColourPicker.x * 255);
+						*(int*)BASEWEATHER_FOG_COLOUR_G_ADDR = (int)(FogColourPicker.y * 255);
+						*(int*)BASEWEATHER_FOG_COLOUR_B_ADDR = (int)(FogColourPicker.z * 255);
+					}
+				}
+			}
+			if (ImGui::CollapsingHeader("Rain", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Rain X", (float*)PRECIP_RAINX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Y", (float*)PRECIP_RAINY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Z", (float*)PRECIP_RAINZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Z Constant", (float*)PRECIP_RAINZCONSTANT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Radius X", (float*)PRECIP_RAINRADIUSX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Radius Y", (float*)PRECIP_RAINRADIUSY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Radius Z", (float*)PRECIP_RAINRADIUSZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Wind Effect", (float*)PRECIP_RAINWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Percentage", (float*)PRECIP_RAINPERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain in the headlights", (float*)PRECIP_RAININTHEHEADLIGHTS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Snow", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Snow X", (float*)PRECIP_SNOWX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Y", (float*)PRECIP_SNOWY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Z", (float*)PRECIP_SNOWZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Z Constant", (float*)PRECIP_SNOWZCONSTANT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Radius X", (float*)PRECIP_SNOWRADIUSX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Radius Y", (float*)PRECIP_SNOWRADIUSY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Radius Z", (float*)PRECIP_SNOWRADIUSZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Wind Effect", (float*)PRECIP_SNOWWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Snow Percentage", (float*)PRECIP_SNOWPERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Sleet", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Sleet X", (float*)PRECIP_SLEETX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Y", (float*)PRECIP_SLEETY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Z", (float*)PRECIP_SLEETZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Z Constant", (float*)PRECIP_SLEETZCONSTANT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Radius X", (float*)PRECIP_SLEETRADIUSX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Radius Y", (float*)PRECIP_SLEETRADIUSY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Radius Z", (float*)PRECIP_SLEETRADIUSZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Sleet Wind Effect", (float*)PRECIP_SLEETWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Hail", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Hail X", (float*)PRECIP_HAILX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Y", (float*)PRECIP_HAILY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Z", (float*)PRECIP_HAILZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Z Constant", (float*)PRECIP_HAILZCONSTANT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Radius X", (float*)PRECIP_HAILRADIUSX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Radius Y", (float*)PRECIP_HAILRADIUSY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Radius Z", (float*)PRECIP_HAILRADIUSZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Hail Wind Effect", (float*)PRECIP_HAILWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+
+		}
+#endif
+#ifdef HAS_FOG_CTRL
+#ifndef OLD_NFS
+		if (ImGui::CollapsingHeader("Precipitation & Weather", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::Checkbox("Precipitation Enable", (bool*)PRECIPITATION_ENABLE_ADDR);
+			ImGui::Checkbox("Precipitation Render", (bool*)PRECIPITATION_RENDER_ADDR);
+			ImGui::Checkbox("Precipitation Debug Enable", (bool*)PRECIPITATION_DEBUG_ADDR);
+			ImGui::Separator();
+			ImGui::TextUnformatted("Values");
+			if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Precipitation Percentage", (float*)PRECIPITATION_PERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Bound X", (float*)PRECIP_BOUNDX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Bound Y", (float*)PRECIP_BOUNDY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Bound Z", (float*)PRECIP_BOUNDZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Ahead X", (float*)PRECIP_AHEADX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Ahead Y", (float*)PRECIP_AHEADY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Ahead Z", (float*)PRECIP_AHEADZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Drive Factor", (float*)PRECIP_DRIVEFACTOR_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Prevailing Multiplier", (float*)PRECIP_PREVAILINGMULT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Camera Mod", (float*)PRECIP_CAMERAMOD_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Wind", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Wind Angle", (float*)PRECIP_WINDANG_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Max Sway", (float*)PRECIP_SWAYMAX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Max Wind Effect", (float*)PRECIP_MAXWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Road Dampness", ImGuiTreeNodeFlags_None))
+			{
+#ifdef GAME_MW
+				ImGui::InputFloat("Base Dampness", (float*)PRECIP_BASEDAMPNESS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#endif
+#ifdef GAME_CARBON
+				ImGui::InputFloat("Wet Dampness", (float*)PRECIP_WETDAMPNESS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Dry Dampness", (float*)PRECIP_DRYDAMPNESS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+
+#endif
+			}
+			if (ImGui::CollapsingHeader("On-screen FX", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Drip Speed", (float*)PRECIP_ONSCREEN_DRIPSPEED_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Speed Mod", (float*)PRECIP_ONSCREEN_SPEEDMOD_ADDR, 0.0001, 0.001, "%.6f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Drop Shape Speed Change", (float*)PRECIP_ONSCREEN_DROPSHAPESPEEDCHANGE_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Fog", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::Checkbox("Fog Control OverRide", (bool*)FOG_CTRLOVERRIDE_ADDR);
+				ImGui::InputFloat("Precip. Fog Percentage", (float*)PRECIP_FOGPERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Falloff", (float*)BASEFOG_FALLOFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Falloff X", (float*)BASEFOG_FALLOFFX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Falloff Y", (float*)BASEFOG_FALLOFFY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#ifdef GAME_CARBON
+				ImGui::InputFloat("Base Fog End", (float*)BASEFOGEND_NONPS2_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Fog Exponent", (float*)BASEFOGEXPONENT_NONPS2_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#endif
+#ifdef GAME_CARBON
+				ImGui::InputFloat("Base Weather Fog", (float*)BASEWEATHERFOG_NONPS2_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Base Weather Fog (PS2 value)", (float*)BASEWEATHER_FOG_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#else
+				ImGui::InputFloat("Base Weather Fog)", (float*)BASEWEATHER_FOG_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#endif
+				ImGui::InputFloat("Base Weather Fog Start", (float*)BASEWEATHER_FOG_START_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				if (ImGui::CollapsingHeader("Base Weather Fog Colour", ImGuiTreeNodeFlags_None))
+				{
+					//ImGui::InputInt("R", (int*)BASEWEATHER_FOG_COLOUR_R_ADDR, 1, 100, ImGuiInputTextFlags_None);
+					//ImGui::InputInt("G", (int*)BASEWEATHER_FOG_COLOUR_G_ADDR, 1, 100, ImGuiInputTextFlags_None);
+					//ImGui::InputInt("B", (int*)BASEWEATHER_FOG_COLOUR_B_ADDR, 1, 100, ImGuiInputTextFlags_None);
+					if (ImGui::ColorPicker3("", (float*)&(FogColourPicker.x), ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_PickerHueWheel))
+					{
+						*(int*)BASEWEATHER_FOG_COLOUR_R_ADDR = (int)(FogColourPicker.x * 255);
+						*(int*)BASEWEATHER_FOG_COLOUR_G_ADDR = (int)(FogColourPicker.y * 255);
+						*(int*)BASEWEATHER_FOG_COLOUR_B_ADDR = (int)(FogColourPicker.z * 255);
+					}
+#ifdef GAME_CARBON
+					ImGui::Separator();
+#endif
+				}
+#ifdef GAME_CARBON
+				//ImGui::InputFloat("Base Sky Fog Falloff", (float*)BASESKYFOGFALLOFF_ADDR, 0.001, 0.01, "%.6f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::SliderFloat("Base Sky Fog Falloff", (float*)BASESKYFOGFALLOFF_ADDR, -0.005, 0.005, "%.6f");
+				ImGui::InputFloat("Base Sky Fog Offset", (float*)BASESKYFOGOFFSET_ADDR, 0.1, 1.00, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#endif
+			}
+			if (ImGui::CollapsingHeader("Clouds", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Rate of change", (float*)PRECIP_CLOUDSRATEOFCHANGE_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+			if (ImGui::CollapsingHeader("Rain", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Rain X", (float*)PRECIP_RAINX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Y", (float*)PRECIP_RAINY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Z", (float*)PRECIP_RAINZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Z Constant", (float*)PRECIP_RAINZCONSTANT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Radius X", (float*)PRECIP_RAINRADIUSX_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Radius Y", (float*)PRECIP_RAINRADIUSY_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Radius Z", (float*)PRECIP_RAINRADIUSZ_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Wind Effect", (float*)PRECIP_RAINWINDEFF_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Percentage", (float*)PRECIP_RAINPERCENT_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain in the headlights", (float*)PRECIP_RAININTHEHEADLIGHTS_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Rain Rate of change", (float*)PRECIP_RAINRATEOFCHANGE_ADDR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+			}
+		}
+#endif
+#endif
+#ifdef GAME_MW
+		if (ImGui::CollapsingHeader("Visual Filter Control", ImGuiTreeNodeFlags_None))
+		{
+
+			if (*(int*)VISUALTREATMENT_INSTANCE_ADDR)
+			{
+				int visualFilterVars = 0;
+
+				if (**(int**)VISUALTREATMENT_INSTANCE_ADDR == COPCAM_LOOK)
+					visualFilterVars = (*(int*)VISUALTREATMENT_INSTANCE_ADDR) + 0x1AC;
+				else
+				{
+					**(int**)VISUALTREATMENT_INSTANCE_ADDR = 0;
+					visualFilterVars = (*(int*)VISUALTREATMENT_INSTANCE_ADDR) + 0x184;
+				}
+				if (visualFilterVars)
+				{
+					visualFilterVars = *(int*)(visualFilterVars + 8);
+					if (ImGui::CollapsingHeader("Colour", ImGuiTreeNodeFlags_None))
+					{
+						ImGui::Checkbox("Cop Cam Look", *(bool**)VISUALTREATMENT_INSTANCE_ADDR);
+
+						(VisualFilterColourPicker.x) = *(float*)(visualFilterVars + 0xC0);
+						(VisualFilterColourPicker.y) = *(float*)(visualFilterVars + 0xC4);
+						(VisualFilterColourPicker.z) = *(float*)(visualFilterVars + 0xC8);
+
+						if (ImGui::ColorPicker3("", (float*)&(VisualFilterColourPicker.x), ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_PickerHueWheel))
+						{
+							*(float*)(visualFilterVars + 0xC0) = (VisualFilterColourPicker.x) * VisualFilterColourMultiR;
+							*(float*)(visualFilterVars + 0xC4) = (VisualFilterColourPicker.y) * VisualFilterColourMultiG;
+							*(float*)(visualFilterVars + 0xC8) = (VisualFilterColourPicker.z) * VisualFilterColourMultiB;
+						}
+						ImGui::InputFloat("Multiplier R", &VisualFilterColourMultiR, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+						ImGui::InputFloat("Multiplier G", &VisualFilterColourMultiG, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+						ImGui::InputFloat("Multiplier B", &VisualFilterColourMultiB, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+						ImGui::Separator();
+					}
+					ImGui::InputFloat("Filter Colour Power", (float*)(visualFilterVars + 0xD0), 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+					ImGui::InputFloat("Saturation", (float*)(visualFilterVars + 0xD4), 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+					ImGui::InputFloat("Black Bloom", (float*)(visualFilterVars + 0xDC), 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+					if (ImGui::CollapsingHeader("Unknown values", ImGuiTreeNodeFlags_None))
+					{
+						ImGui::InputFloat("Unknown 1", (float*)(visualFilterVars + 0xCC), 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+						ImGui::InputFloat("Unknown 2", (float*)(visualFilterVars + 0xD8), 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+					}
+				}
+				else
+					ImGui::TextUnformatted("ERROR: Cannot fetch visual filter values!");
+
+				ImGui::Text("Base Address: 0x%X", visualFilterVars);
+			}
+		}
+#endif
+	}
+	ImGui::Separator();
+#ifndef OLD_NFS
+#ifndef GAME_UC
+	if (ImGui::CollapsingHeader("FMV", ImGuiTreeNodeFlags_None))
+	{
+#ifdef GAME_MW
+		char* moviefilename_pointer = (char*)MOVIEFILENAME_ADDR;
+		if (*(int*)GAMEFLOWMGR_STATUS_ADDR == GAMEFLOW_STATE_RACING)
+			moviefilename_pointer = (char*)INGAMEMOVIEFILENAME_ADDR;
+		ImGui::InputText("Movie Filename", moviefilename_pointer, 0x40);
+#else
+		ImGui::InputText("Movie Filename", MovieFilename, 0x40);
+#endif
+		if (ImGui::Button("Play Movie", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+#ifdef NFS_MULTITHREAD
+			bDoPlayMovie = true;
+#else
+			PlayMovie();
+#endif
+		}
+		if (ImGui::CollapsingHeader("Movie filename info (how to)", ImGuiTreeNodeFlags_None))
+		{
+			ImGui::PushTextWrapPos();
+			ImGui::TextUnformatted("In the \"Movie Filename\" box only type in the name of the movie, not the full filename\nExample: If you want to play blacklist_01_english_ntsc.vp6, only type in the \"blacklist_01\", not the \"_english_ntsc.vp6\" part of it.\nWhen you go in-game, the input box will change its pointer to the in-game buffer.");
+			ImGui::PopTextWrapPos();
+		}
+#ifdef GAME_MW
+		ImGui::Separator();
+		if (ImGui::CollapsingHeader("BlackList FMV", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Blacklist 01", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_01");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 02", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_02");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 03", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_03");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 04", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_04");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 05", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_05");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 06", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_06");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 07", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_07");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 08", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_08");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 09", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_09");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 10", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_10");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 11", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_11");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 12", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_12");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 13", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_13");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 14", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_14");
+				PlayMovie();
+			}
+			if (ImGui::Button("Blacklist 15", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "blacklist_15");
+				PlayMovie();
+			}
+		}
+		if (ImGui::CollapsingHeader("Story FMV", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("storyfmv_bla134", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_bla134");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_bus12", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_bus12");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_cro06_coh06a", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_cro06_coh06a");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_dda01", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_dda01");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_epi138", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_epi138");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_her136", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_her136");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_pin11", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_pin11");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_pol17_mot21", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_pol17_mot21");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_rap30", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_rap30");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_raz08", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_raz08");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_roc02", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_roc02");
+				PlayMovie();
+			}
+			if (ImGui::Button("storyfmv_saf25", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "storyfmv_saf25");
+				PlayMovie();
+			}
+		}
+		if (ImGui::CollapsingHeader("Demo FMV", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("SSX OnTour Trailer", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "SX-OT-n-480");
+				PlayMovie();
+			}
+			if (ImGui::Button("NBA Live 2006 Trailer", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "NBALive-2006-n");
+				PlayMovie();
+			}
+			if (ImGui::Button("MarvNM_480", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "MarvNM-480");
+				PlayMovie();
+			}
+		}
+		if (ImGui::CollapsingHeader("Intro FMV", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Intro", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "intro_movie");
+				PlayMovie();
+			}
+			if (ImGui::Button("Attract", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "attract_movie");
+				PlayMovie();
+			}
+			if (ImGui::Button("EA Logo", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "ealogo");
+				PlayMovie();
+			}
+			if (ImGui::Button("PSA", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "psa");
+				PlayMovie();
+			}
+		}
+		if (ImGui::CollapsingHeader("Tutorial FMV", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::Button("Drag Tutorial", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "drag_tutorial");
+				PlayMovie();
+			}
+			if (ImGui::Button("Sprint Tutorial", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "sprint_tutorial");
+				PlayMovie();
+			}
+			if (ImGui::Button("Tollbooth Tutorial", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "tollbooth_tutorial");
+				PlayMovie();
+			}
+			if (ImGui::Button("Pursuit Tutorial", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "pursuit_tutorial");
+				PlayMovie();
+			}
+			if (ImGui::Button("Bounty Tutorial", ImVec2(ImGui::CalcItemWidth(), 0)))
+			{
+				strcpy(moviefilename_pointer, "bounty_tutorial");
+				PlayMovie();
+			}
+		}
+#endif
+	}
+	ImGui::Separator();
+#endif
+#endif
+#ifndef OLD_NFS
+	if (ImGui::CollapsingHeader("Rub Test", ImGuiTreeNodeFlags_None))
+	{
+#ifndef GAME_MW
+#ifdef GAME_PS
+		ImGui::Checkbox("Draw World", &bDrawWorld);
+#else
+		ImGui::Checkbox("Draw World", (bool*)DRAWWORLD_ADDR); // TODO - find / make the toggle for MW
+#endif
+#endif
+		ImGui::Checkbox("Draw Cars", (bool*)DRAWCARS_ADDR);
+	}
+	ImGui::Separator();
+#endif
+	if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_None))
+	{
+#if defined(GAME_MW) || defined(GAME_UG2)
+		if (ImGui::CollapsingHeader("Build Version", ImGuiTreeNodeFlags_None))
+		{
+#ifdef GAME_UG2
+			ImGui::Text("Perforce Changelist Number: %d\nPerforce Changelist Name: %s\nBuild Machine: %s", *(int*)BUILDVERSIONCLNUMBER_ADDR, *(char**)BUILDVERSIONCLNAME_ADDR, *(char**)BUILDVERSIONMACHINE_ADDR); // TODO: make these flexible addresses...
+#else
+			ImGui::Text("Platform: %s\nBuild Type:%s%s\nPerforce Changelist Number: %d\nPerforce Changelist Name: %s\nBuild Date: %s\nBuild Machine: %s", (char*)BUILDVERSIONPLAT_ADDR, (char*)BUILDVERSIONNAME_ADDR, (char*)BUILDVERSIONOPTNAME_ADDR, *(int*)BUILDVERSIONCLNUMBER_ADDR, *(char**)BUILDVERSIONCLNAME_ADDR, *(char**)BUILDVERSIONDATE_ADDR, *(char**)BUILDVERSIONMACHINE_ADDR); // TODO: make these flexible addresses...
+#endif
+			ImGui::Separator();
+		}
+#endif
+#ifdef HAS_DAL
+		if (ImGui::CollapsingHeader("DAL Options", ImGuiTreeNodeFlags_None))
+		{
+			if (ImGui::CollapsingHeader("FrontEnd", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("FE Scale", (float*)FESCALE_POINTER, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::Checkbox("Widescreen mode", (bool*)WIDESCREEN_POINTER);
+#ifdef GAME_CARBON
+				ImGui::Separator();
+				ImGui::Checkbox("Lap Info", (bool*)FELAPINFO_POINTER);
+				ImGui::Checkbox("Score", (bool*)FESCORE_POINTER);
+				ImGui::Checkbox("Leaderboard", (bool*)FELEADERBOARD_POINTER);
+				ImGui::Checkbox("Crew Info", (bool*)FECREWINFO_POINTER);
+				ImGui::Checkbox("Transmission Prompt", (bool*)FETRANSMISSIONPROMPT_POINTER);
+				ImGui::Checkbox("Rearview Mirror", (bool*)FERVM_POINTER);
+				ImGui::Checkbox("Picture In Picture", (bool*)FEPIP_POINTER);
+				ImGui::Checkbox("Metric Speedo Units", (bool*)SPEEDOUNIT_POINTER);
+#endif
+			}
+#ifdef GAME_CARBON
+			if (ImGui::CollapsingHeader("Input", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::Checkbox("Rumble", (bool*)RUMBLEON_POINTER);
+				ImGui::InputInt("PC Pad Index", (int*)PCPADIDX_POINTER, 1, 100);
+				ImGui::InputInt("PC Device Type", (int*)PCDEVTYPE_POINTER, 1, 100);
+			}
+#endif
+			if (ImGui::CollapsingHeader("Gameplay", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::InputFloat("Highlight Cam", (float*)HIGHLIGHTCAM_POINTER, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+				ImGui::InputFloat("Time Of Day", (float*)TIMEOFDAY_POINTER, 0.1, 1.0, "%.3f", ImGuiInputTextFlags_CharsScientific);
+#ifdef GAME_CARBON
+				ImGui::Checkbox("Jump Cam", (bool*)JUMPCAM_POINTER);
+				ImGui::Checkbox("Car Damage", (bool*)DAMAGEON_POINTER);
+				ImGui::Checkbox("Autosave", (bool*)AUTOSAVEON_POINTER);
+#endif
+			}
+			if (ImGui::CollapsingHeader("Audio Levels", ImGuiTreeNodeFlags_None))
+			{
+				ImGui::SliderFloat("Master", (float*)MASTERVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("Speech", (float*)SPEECHVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("FE Music", (float*)FEMUSICVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("IG Music", (float*)IGMUSICVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("Sound Effects", (float*)SOUNDEFFECTSVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("Engine", (float*)ENGINEVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("Car", (float*)CARVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("Ambient", (float*)AMBIENTVOL_POINTER, 0.0, 1.0);
+				ImGui::SliderFloat("Speed", (float*)SPEEDVOL_POINTER, 0.0, 1.0);
+			}
+
+		}
+		ImGui::Separator();
+#endif
+		if (ImGui::Button("Exit Game", ImVec2(ImGui::CalcItemWidth(), 0)))
+		{
+			*(int*)EXITGAMEFLAG_ADDR = 1;
+		}
+	}
+	ImGui::Separator();
+	ImGui::Text("GameFlow State: %s", GameFlowStateNames[*(int*)GAMEFLOWMGR_STATUS_ADDR]);
+	ImGui::Separator();
+	if (modified)
+		save_config();
+}
+// NFS CODE END
+
+
 #if RESHADE_ADDON
 void reshade::runtime::draw_gui_addons()
 {

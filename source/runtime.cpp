@@ -597,6 +597,24 @@ void reshade::runtime::on_reset()
 
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
+
+void reshade::runtime::on_nfs_present()
+{
+#if RESHADE_GUI
+	// Draw overlay // NFS CHANGE - we do this now in on_gui_present
+	//draw_gui();
+
+	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture != 0 && _effects_enabled)))
+		save_screenshot(" ui");
+#endif
+
+	// All screenshots were created at this point, so reset request
+	_should_save_screenshot = false;
+
+	// Reset frame statistics
+	// _drawcalls = _vertices = 0;
+}
+
 void reshade::runtime::on_present(api::command_queue *present_queue)
 {
 	assert(present_queue != nullptr);
@@ -1033,6 +1051,10 @@ void reshade::runtime::load_config()
 	config_get("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);
 	config_get("SCREENSHOT", "PostSaveCommandWorkingDirectory", _screenshot_post_save_command_working_directory);
 	config_get("SCREENSHOT", "PostSaveCommandHideWindow", _screenshot_post_save_command_hide_window);
+
+#ifdef GAME_UC
+	config.get("NFS", "MotionBlur", bMotionBlur);
+#endif
 
 #if RESHADE_GUI
 	load_config_gui(config);

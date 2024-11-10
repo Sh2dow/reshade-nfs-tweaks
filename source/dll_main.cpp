@@ -19,6 +19,27 @@ static PVOID s_exception_handler_handle = nullptr;
 // Export special symbol to identify modules as ReShade instances
 extern "C" __declspec(dllexport) const char *ReShadeVersion = VERSION_STRING_PRODUCT;
 
+// NFS changes
+#include "nfsincludes/injector/injector.hpp"
+#ifdef GAME_MW
+#include "NFSMW_PreFEngHook.h"
+#endif
+#ifdef GAME_CARBON
+#include "NFSC_PreFEngHook.h"
+#endif
+#ifdef GAME_UG2
+#include "NFSU2_PreFEngHook.h"
+#endif
+#ifdef GAME_UG
+#include "NFSU_PreFEngHook.h"
+#endif
+#ifdef GAME_PS
+#include "NFSPS_PreFEngHook.h"
+#endif
+#ifdef GAME_UC
+#include "NFSUC_PreFEngHook.h"
+#endif
+
 HANDLE g_exit_event = nullptr;
 HMODULE g_module_handle = nullptr;
 std::filesystem::path g_reshade_dll_path;
@@ -334,6 +355,46 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 #endif
 				}
 			}
+
+				// NFS INJECTION
+
+#ifdef NFS_MULTITHREAD
+				injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+				injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
+#else
+#ifdef NFS_MULTITHREAD
+				injector::MakeCALL(FEMANAGER_RENDER_HOOKADDR1, FEManager_Render_Hook, true);
+				injector::MakeCALL(FEMANAGER_RENDER_HOOKADDR2, FEManager_Render_Hook, true);
+#endif
+#ifdef GAME_MW
+				injector::MakeNOP(GAMEFLOW_UNLOADTRACK_FIX, 5, true);
+#endif
+#ifdef GAME_CARBON
+				injector::MakeCALL(INFINITENOS_HOOK, EasterEggCheck_Hook, true);
+				//injector::MakeCALL(INFINITERB_HOOK, EasterEggCheck_Hook, true); // unnecessary, but left here
+#endif
+#ifdef GAME_PS
+				injector::MakeJMP(AICONTROL_CAVE_ADDR, ToggleAIControlCave, true);
+				injector::MakeJMP(INFINITENOS_CAVE_ADDR, InfiniteNOSCave, true);
+				injector::MakeJMP(GAMESPEED_CAVE_ADDR, GameSpeedCave, true);
+				injector::MakeJMP(DRAWWORLD_CAVE_ADDR, DrawWorldCave, true);
+				injector::WriteMemory<char>(SKIPFE_PLAYERCAR_DEHARDCODE_PATCH_ADDR, 0xA1, true);
+				injector::WriteMemory<int>(SKIPFE_PLAYERCAR_DEHARDCODE_PATCH_ADDR + 1, SKIPFE_PLAYERCAR_ADDR, true);
+#endif
+#ifdef GAME_UC
+				injector::MakeJMP(NFSUC_MOTIONBLUR_HOOK_ADDR, MotionBlur_EntryPoint, true);
+				injector::MakeJMP(INFINITENOS_CAVE_ADDR, InfiniteNOSCave, true);
+				injector::MakeJMP(AICONTROL_CAVE_ADDR, ToggleAIControlCave, true);
+#endif
+#ifdef GAME_UG2
+				injector::MakeCALL(SETRAIN_HOOK_ADDR, SetRainBase_Custom, true);
+#endif
+#ifdef HAS_COPS
+#ifndef GAME_UC
+				injector::MakeCALL(HEATONEVENTWIN_HOOK_ADDR, FECareerRecord_AdjustHeatOnEventWin_Hook, true);
+#endif
+#endif
+#endif
 
 			reshade::log::message(reshade::log::level::info, "Initialized.");
 			break;
