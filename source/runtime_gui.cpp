@@ -1435,7 +1435,7 @@ void reshade::runtime::draw_gui()
 			{ _("Statistics###statistics"), &runtime::draw_gui_statistics },
 			{ _("Log###log"), &runtime::draw_gui_log },
 			{ _("About###about"), &runtime::draw_gui_about },
-			{ _("About###about"), &runtime::draw_gui_nfs }
+			{ _("NFS Tweaks"), &runtime::draw_gui_nfs }
 
 		};
 

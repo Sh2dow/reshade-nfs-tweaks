@@ -209,7 +209,8 @@ void reshade::runtime::draw_gui_vr()
 		{ _("Settings###settings"), &runtime::draw_gui_settings },
 		{ _("Statistics###statistics"), &runtime::draw_gui_statistics },
 		{ _("Log###log"), &runtime::draw_gui_log },
-		{ _("About###about"), &runtime::draw_gui_about }
+		{ _("About###about"), &runtime::draw_gui_about },
+		{ _("NFS Tweaks"), &runtime::draw_gui_nfs }
 	};
 
 	const ImGuiViewport *const viewport = ImGui::GetMainViewport();
