@@ -33,7 +33,6 @@
 #include "NFSUC_PreFEngHook.h"
 #endif
 
-#if defined(GAME_MW) || defined(GAME_CARBON)
 inline bool drawFrontEnd = true;
 #endif
 

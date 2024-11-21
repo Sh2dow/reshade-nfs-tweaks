@@ -155,6 +155,12 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <TargetName>Reshade32</TargetName>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-UG2|Win32'">
+    <TargetName>ReShade32</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-UG|Win32'">
+    <TargetName>ReShade32</TargetName>
+  </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <!-- Fix inconsistent DLL linkage warnings because of prototypes defined in "wingdi.h" and "Winsock2.h" using "__declspec(dllimport)" -->

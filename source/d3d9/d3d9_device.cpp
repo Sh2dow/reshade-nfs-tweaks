@@ -2842,7 +2842,9 @@ void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsign
 void __stdcall FEManager_Render_Hook()
 {
 	unsigned int TheThis = 0;
+#ifndef _WIN64
 	_asm mov TheThis, ecx
+#endif
 	// TexMod "fix"
 	// since TexMod is a hacky and leechy piece of garbage, we have to use regular pointers to D3D9 functions... without TexMod it works fine so there's that
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
