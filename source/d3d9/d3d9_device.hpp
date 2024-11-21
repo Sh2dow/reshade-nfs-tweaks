@@ -178,6 +178,10 @@ struct DECLSPEC_UUID("F1006E9A-1C51-4AF4-ACEF-3605D2D4C8EE") Direct3DDevice9 fin
 	Direct3DSwapChain9 *_implicit_swapchain = nullptr;
 	std::vector<Direct3DSwapChain9 *> _additional_swapchains;
 	Direct3DDevice9On12 *_d3d9on12_device = nullptr;
+
+	// com_ptr<IDirect3DSurface9> _auto_depthstencil;
+	// reshade::d3d9::buffer_detection _buffer_detection;
+
 #if RESHADE_ADDON
 	Direct3DDepthStencilSurface9 *_auto_depth_stencil = nullptr;
 	com_ptr<Direct3DDepthStencilSurface9> _current_depth_stencil;

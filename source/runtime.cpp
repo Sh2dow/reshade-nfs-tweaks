@@ -598,23 +598,6 @@ void reshade::runtime::on_reset()
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
 
-void reshade::runtime::on_nfs_present()
-{
-#if RESHADE_GUI
-	// Draw overlay // NFS CHANGE - we do this now in on_gui_present
-	//draw_gui();
-
-	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture != 0 && _effects_enabled)))
-		save_screenshot(" ui");
-#endif
-
-	// All screenshots were created at this point, so reset request
-	_should_save_screenshot = false;
-
-	// Reset frame statistics
-	// _drawcalls = _vertices = 0;
-}
-
 void reshade::runtime::on_present(api::command_queue *present_queue)
 {
 	assert(present_queue != nullptr);
@@ -703,6 +686,9 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 	if (_should_save_screenshot)
 		save_screenshot();
 
+	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+	*drawHUDAddr = drawFrontEnd;
+
 	_frame_count++;
 	const auto current_time = std::chrono::high_resolution_clock::now();
 	_last_frame_duration = current_time - _last_present_time; _last_present_time = current_time;
@@ -740,6 +726,9 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 
 		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
 		{
+			// *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+			*drawHUDAddr = _screenshot_nfs_hud;
+
 			_screenshot_count++;
 			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame
 		}
@@ -1051,6 +1040,7 @@ void reshade::runtime::load_config()
 	config_get("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);
 	config_get("SCREENSHOT", "PostSaveCommandWorkingDirectory", _screenshot_post_save_command_working_directory);
 	config_get("SCREENSHOT", "PostSaveCommandHideWindow", _screenshot_post_save_command_hide_window);
+	config_get("SCREENSHOT", "ShowNfsFe", _screenshot_nfs_hud);
 
 #ifdef GAME_UC
 	config.get("NFS", "MotionBlur", bMotionBlur);
@@ -1123,6 +1113,7 @@ void reshade::runtime::save_config() const
 	config.set("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);
 	config.set("SCREENSHOT", "PostSaveCommandWorkingDirectory", _screenshot_post_save_command_working_directory);
 	config.set("SCREENSHOT", "PostSaveCommandHideWindow", _screenshot_post_save_command_hide_window);
+	config.set("SCREENSHOT", "ShowNfsFe", _screenshot_nfs_hud);
 
 #if RESHADE_GUI
 	save_config_gui(config);
@@ -4824,6 +4815,7 @@ void reshade::runtime::save_screenshot(const std::string_view postfix)
 	log::message(log::level::info, "Saving screenshot to '%s'.", screenshot_path.u8string().c_str());
 
 	_last_screenshot_save_successful = true;
+
 
 	if (std::vector<uint8_t> pixels(static_cast<size_t>(_width) * static_cast<size_t>(_height) * 4);
 		capture_screenshot(pixels.data()))

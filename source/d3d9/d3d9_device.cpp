@@ -34,6 +34,8 @@
 
 using reshade::d3d9::to_handle;
 
+Direct3DDevice9* g_pd3dDevice;
+
 extern thread_local bool g_in_d3d9_runtime;
 extern thread_local bool g_in_dxgi_runtime;
 
@@ -69,11 +71,12 @@ const reshade::api::subresource_box *convert_rect_to_box(const POINT *point, LON
 	return &box;
 }
 
-Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9   *original, bool use_software_rendering) :
+Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9 *original, bool use_software_rendering) :
 	device_impl(original),
 	_extended_interface(false),
 	_use_software_rendering(use_software_rendering)
 {
+	g_pd3dDevice = this;
 	assert(_orig != nullptr);
 
 #if RESHADE_ADDON
@@ -85,6 +88,7 @@ Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9   *original, bool use_software
 Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9Ex *original, bool use_software_rendering) :
 	Direct3DDevice9(static_cast<IDirect3DDevice9 *>(original), use_software_rendering)
 {
+	g_pd3dDevice = this;
 	_extended_interface = true;
 }
 Direct3DDevice9::~Direct3DDevice9()
@@ -187,6 +191,7 @@ ULONG   STDMETHODCALLTYPE Direct3DDevice9::Release()
 #endif
 	// Only call destructor and do not yet free memory before calling final 'Release' below
 	// Some resources may still be alive here (e.g. because of a state block from the Steam overlay, which is released on device destruction), which will then call the resource destruction callbacks during the final 'Release' and still access this memory
+	g_pd3dDevice = NULL;
 	this->~Direct3DDevice9();
 
 	const ULONG ref_orig = orig->Release();
@@ -344,6 +349,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresent
 		on_init();
 	}
 
+	g_pd3dDevice = this;
 	return hr;
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::Present(const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion)
@@ -1265,6 +1271,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::BeginScene()
 	_current_prim_type = static_cast<D3DPRIMITIVETYPE>(0);
 #endif
 
+	//g_pd3dDevice = _runtime
 	return _orig->BeginScene();
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::EndScene()
@@ -1540,6 +1547,15 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::GetSamplerState(DWORD Sampler, D3DSAM
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value)
 {
+	// NFSMW Stuff
+	// DWORD MaxAnisotropy = 4;
+	// if (Type == D3DSAMP_MAXANISOTROPY)
+	// {
+	// 	if (SUCCEEDED(_orig->SetSamplerState(Sampler, Type, MaxAnisotropy)))
+	// 	{
+	// 		return D3D_OK;
+	// 	}
+	// }
 	return _orig->SetSamplerState(Sampler, Type, Value);
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::ValidateDevice(DWORD *pNumPasses)
@@ -2242,6 +2258,10 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::ComposeRects(IDirect3DSurface9 *pSrc,
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::PresentEx(const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
 {
+	//if (Direct3DSwapChain9::is_presenting_entire_surface(pSourceRect, hDestWindowOverride))
+	//	_implicit_swapchain->_runtime->on_gui_present();
+	//_buffer_detection.reset(false);
+
 	assert(_extended_interface);
 
 	// Skip when no presentation is requested
@@ -2777,6 +2797,7 @@ void Direct3DDevice9::resize_primitive_up_buffers(UINT vertex_buffer_size, UINT 
 	}
 }
 #endif
+
 #if defined(GAME_UC) || defined(GAME_PS)
 #ifdef GAME_UC
 bool bGlobalMotionBlur = false;
@@ -2796,11 +2817,11 @@ void __declspec(naked) MotionBlur_EntryPoint()
 #endif
 void __stdcall ReShade_Hook()
 {
-	// Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+	Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 #ifdef GAME_UC
-	bGlobalMotionBlur = to_handle->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
+	bGlobalMotionBlur = g_pd3dDevice->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
 #endif
-	to_handle->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
+	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
 }
 
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
@@ -2816,7 +2837,7 @@ void __declspec(naked) ReShade_EntryPoint()
 }
 
 
-#elseif defined(GAME_UC) || defined(GAME_PS)
+#else
 void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsigned int))FEMANAGER_RENDER_ADDRESS;
 void __stdcall FEManager_Render_Hook()
 {
@@ -2827,7 +2848,7 @@ void __stdcall FEManager_Render_Hook()
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
 	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 
-	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	// g_pd3dDevice->_implicit_swapchain->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
 	FEManager_Render(TheThis);
 }
 #endif

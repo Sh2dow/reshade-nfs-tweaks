@@ -2289,6 +2289,8 @@ void reshade::runtime::draw_gui_settings()
 #endif
 		modified |= ImGui::Checkbox(_("Save separate image with the overlay visible"), &_screenshot_save_gui);
 
+		modified |= ImGui::Checkbox(_("NFS HUD on screenshot"), &_screenshot_nfs_hud);
+
 		modified |= imgui::file_input_box(_("Screenshot sound"), "sound.wav", _screenshot_sound_path, _file_selection_path, { L".wav" });
 		ImGui::SetItemTooltip(_("Audio file that is played when taking a screenshot."));
 
@@ -3682,6 +3684,7 @@ int FeCarPosition = 0;
 #endif
 
 #if defined(GAME_MW) || defined(GAME_CARBON)
+
 void __stdcall JumpToNewPos(bVector3* pos)
 {
 	int FirstLocalPlayer = **(int**)PLAYER_LISTABLESET_ADDR;
@@ -4132,7 +4135,12 @@ void reshade::runtime::draw_gui_nfs()
 
 	ImGui::TextUnformatted("NFS Tweak Menu");
 	ImGui::Separator();
-	ImGui::Checkbox("Draw FrontEnd", (bool*)DRAW_FENG_BOOL_ADDR);
+	// ImGui::Checkbox("Draw FrontEnd", (bool*)DRAW_FENG_BOOL_ADDR);
+
+	drawFrontEnd = *(bool*)DRAW_FENG_BOOL_ADDR;
+	if (ImGui::Checkbox("Draw FrontEnd", &drawFrontEnd))
+		*(bool*)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
+
 	ImGui::Separator();
 	if (ImGui::CollapsingHeader("Front End", ImGuiTreeNodeFlags_None))
 	{
