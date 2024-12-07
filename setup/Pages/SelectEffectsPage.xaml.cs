@@ -13,6 +13,8 @@ using System.Net;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Navigation;
 using Microsoft.Win32;
 using ReShade.Setup.Utilities;
@@ -111,7 +113,7 @@ namespace ReShade.Setup.Pages
 									TextureInstallPath = packagesIni.GetString(package, "TextureInstallPath", string.Empty),
 									DownloadUrl = packagesIni.GetString(package, "DownloadUrl"),
 									RepositoryUrl = packagesIni.GetString(package, "RepositoryUrl"),
-									EffectFiles = packageEffectFiles?.Where(x => packageDenyEffectFiles == null || !packageDenyEffectFiles.Contains(x)).Select(x => new EffectFile { FileName = x, Selected = true }).ToArray(),
+									EffectFiles = packageEffectFiles?.Where(x => packageDenyEffectFiles == null || !packageDenyEffectFiles.Contains(x)).Select(x => new EffectFile { FileName = x, Selected = false }).ToArray(),
 									DenyEffectFiles = packageDenyEffectFiles
 								};
 
@@ -251,6 +253,39 @@ namespace ReShade.Setup.Pages
 			{
 				e.Handled = false;
 			}
+		}
+
+		private static T GetVisualTreeChild<T>(DependencyObject element) where T : DependencyObject
+		{
+			if (element.GetType() == typeof(T))
+			{
+				return (T)element;
+			}
+			if (element is FrameworkElement frameworkElement)
+			{
+				frameworkElement.ApplyTemplate();
+			}
+			for (int i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+			{
+				var foundElement = GetVisualTreeChild<T>(VisualTreeHelper.GetChild(element, i));
+				if (foundElement != null)
+				{
+					return foundElement;
+				}
+			}
+			return null;
+		}
+
+		private void OnEffectFileListBoxPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+		{
+			if (e.Handled)
+			{
+				return;
+			}
+
+			e.Handled = true;
+
+			GetVisualTreeChild<ScrollViewer>(ItemsListBox).RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent, Source = sender });
 		}
 	}
 }
