@@ -352,16 +352,32 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresent
 	g_pd3dDevice = this;
 	return hr;
 }
-HRESULT STDMETHODCALLTYPE Direct3DDevice9::Present(const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion)
+HRESULT STDMETHODCALLTYPE Direct3DDevice9::Present(
+	const RECT *pSourceRect,
+	const RECT *pDestRect,
+	HWND hDestWindowOverride,
+	const RGNDATA *pDirtyRegion)
 {
-	_implicit_swapchain->on_present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+	if (_implicit_swapchain != nullptr)
+	{
+		// reshade::log::message(reshade::log::level::debug, "Calling on_present on implicit swap chain.");
+		_implicit_swapchain->on_present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+	}
+	else
+	{
+		// reshade::log::message(reshade::log::level::error, "Attempted to call on_present with a null implicit swap chain.");
+	}
 
 	const HRESULT hr = _orig->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 
-	_implicit_swapchain->handle_device_loss(hr);
+	if (_implicit_swapchain != nullptr)
+	{
+		_implicit_swapchain->handle_device_loss(hr);
+	}
 
 	return hr;
 }
+
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::GetBackBuffer(UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9 **ppBackBuffer)
 {
 	if (iSwapChain != 0)
@@ -1547,15 +1563,18 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::GetSamplerState(DWORD Sampler, D3DSAM
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value)
 {
-	// NFSMW Stuff
-	// DWORD MaxAnisotropy = 4;
-	// if (Type == D3DSAMP_MAXANISOTROPY)
-	// {
-	// 	if (SUCCEEDED(_orig->SetSamplerState(Sampler, Type, MaxAnisotropy)))
-	// 	{
-	// 		return D3D_OK;
-	// 	}
-	// }
+
+#if GAME_MW
+	DWORD MaxAnisotropy = 4;
+	if (Type == D3DSAMP_MAXANISOTROPY)
+	{
+		if (SUCCEEDED(_orig->SetSamplerState(Sampler, Type, MaxAnisotropy)))
+		{
+			return D3D_OK;
+		}
+	}
+#endif
+
 	return _orig->SetSamplerState(Sampler, Type, Value);
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::ValidateDevice(DWORD *pNumPasses)
@@ -2258,10 +2277,6 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::ComposeRects(IDirect3DSurface9 *pSrc,
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::PresentEx(const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
 {
-	//if (Direct3DSwapChain9::is_presenting_entire_surface(pSourceRect, hDestWindowOverride))
-	//	_implicit_swapchain->_runtime->on_gui_present();
-	//_buffer_detection.reset(false);
-
 	assert(_extended_interface);
 
 	// Skip when no presentation is requested
@@ -2815,14 +2830,53 @@ void __declspec(naked) MotionBlur_EntryPoint()
 	}
 }
 #endif
+
+// void __stdcall ReShade_Hook()
+// {
+// 	// Access the Direct3DDevice9 from the game's address
+// 	Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+//
+// 	#ifdef GAME_UC
+// 		bGlobalMotionBlur = g_pd3dDevice->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
+// 	#endif
+// 		g_pd3dDevice->_implicit_swapchain->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
+// }
+
 void __stdcall ReShade_Hook()
 {
-	Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+	// Access the Direct3DDevice9 pointer from the game's memory
+	Direct3DDevice9 *g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
+
+	if (g_pd3dDevice == nullptr)
+	{
+		// reshade::log::message(reshade::log::level::error, "Failed to retrieve Direct3DDevice9 instance.");
+		return;
+	}
+
+	// Access the implicit swap chain
+	Direct3DSwapChain9 *swapchain = g_pd3dDevice->_implicit_swapchain;
+	if (swapchain == nullptr)
+	{
+		// reshade::log::message(reshade::log::level::error, "Failed to retrieve implicit swap chain.");
+		return;
+	}
+
 #ifdef GAME_UC
-	bGlobalMotionBlur = g_pd3dDevice->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
+	// Toggle motion blur if applicable
+	bGlobalMotionBlur = swapchain->bMotionBlur; // Assuming `bMotionBlur` exists
+	// bGlobalMotionBlur = true; // Example: Enable motion blur
+	// reshade::log::message(reshade::log::level::debug, "Motion blur toggled in GAME_UC.");
 #endif
-	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
+
+	// reshade::log::message(reshade::log::level::debug, "Implicit swap chain retrieved successfully.");
+
+	// Call the NFS-specific present method
+	swapchain->on_nfs_present(nullptr, nullptr, nullptr, nullptr);
+
+	// reshade::log::message(reshade::log::level::info, "ReShade effects rendered before FE.");
 }
+
+
 
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
@@ -2842,15 +2896,13 @@ void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsign
 void __stdcall FEManager_Render_Hook()
 {
 	unsigned int TheThis = 0;
-#ifndef _WIN64
 	_asm mov TheThis, ecx
-#endif
 	// TexMod "fix"
 	// since TexMod is a hacky and leechy piece of garbage, we have to use regular pointers to D3D9 functions... without TexMod it works fine so there's that
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
 	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 
-	// g_pd3dDevice->_implicit_swapchain->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
 	FEManager_Render(TheThis);
 }
 #endif

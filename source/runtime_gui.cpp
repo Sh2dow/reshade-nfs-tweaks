@@ -380,6 +380,7 @@ void reshade::runtime::load_config_gui(const ini_file &config)
 	config_get("INPUT", "KeyFPS", _fps_key_data);
 	config_get("INPUT", "KeyFrameTime", _frametime_key_data);
 	config_get("INPUT", "InputProcessing", _input_processing_mode);
+	config.get("INPUT", "NFSToggleFrontend", _toggle_fe_key_data);
 
 #if RESHADE_LOCALIZATION
 	config_get("OVERLAY", "Language", _selected_language);
@@ -485,6 +486,7 @@ void reshade::runtime::save_config_gui(ini_file &config) const
 	config.set("INPUT", "KeyFPS", _fps_key_data);
 	config.set("INPUT", "KeyFrametime", _frametime_key_data);
 	config.set("INPUT", "InputProcessing", _input_processing_mode);
+	config.set("INPUT", "NFSToggleFrontend", _toggle_fe_key_data);
 
 #if RESHADE_LOCALIZATION
 	config.set("OVERLAY", "Language", _selected_language);
@@ -2190,6 +2192,7 @@ void reshade::runtime::draw_gui_settings()
 			modified |= ImGui::Combo(_("Input processing"), reinterpret_cast<int *>(&_input_processing_mode), input_processing_mode_items.c_str());
 
 			modified |= imgui::key_input_box(_("Overlay key"), _overlay_key_data, *_input);
+			modified |= imgui::key_input_box("NFS HUD toggle key", _toggle_fe_key_data, *_input);
 
 #if RESHADE_FX
 			modified |= imgui::key_input_box(_("Effect toggle key"), _effects_key_data, *_input);
@@ -4147,11 +4150,12 @@ void reshade::runtime::draw_gui_nfs()
 
 	ImGui::TextUnformatted("NFS Tweak Menu");
 	ImGui::Separator();
-	// ImGui::Checkbox("Draw FrontEnd", (bool*)DRAW_FENG_BOOL_ADDR);
 
 	drawFrontEnd = *(bool*)DRAW_FENG_BOOL_ADDR;
 	if (ImGui::Checkbox("Draw FrontEnd", &drawFrontEnd))
+	{
 		*(bool*)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
+	}
 
 	ImGui::Separator();
 	if (ImGui::CollapsingHeader("Front End", ImGuiTreeNodeFlags_None))

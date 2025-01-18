@@ -598,6 +598,24 @@ void reshade::runtime::on_reset()
 
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
+
+void reshade::runtime::on_nfs_present()
+{
+#if RESHADE_GUI
+	// Draw overlay // NFS CHANGE - we do this now in on_gui_present
+	//draw_gui();
+
+	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture.handle != 0 && _effects_enabled)))
+		save_screenshot(" ui");
+#endif
+
+	// All screenshots were created at this point, so reset request
+	_should_save_screenshot = false;
+
+	// Reset frame statistics
+	// drawcalls = _vertices = 0;
+}
+
 void reshade::runtime::on_present(api::command_queue *present_queue)
 {
 	assert(present_queue != nullptr);
@@ -686,8 +704,10 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 	if (_should_save_screenshot)
 		save_screenshot();
 
-	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
-	*drawHUDAddr = drawFrontEnd;
+#ifndef _WIN64
+	// bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+	// drawFrontEnd = *drawHUDAddr;
+#endif
 
 	_frame_count++;
 	const auto current_time = std::chrono::high_resolution_clock::now();
@@ -724,10 +744,19 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 		}
 #endif
 
+#ifndef _WIN64
+		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
+		{
+			*(bool*)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
+			*drawHUDAddr = !*drawHUDAddr;
+		}
+#endif
+
 		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
 		{
-			// *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+#ifndef _WIN64
 			*drawHUDAddr = _screenshot_nfs_hud;
+#endif
 
 			_screenshot_count++;
 			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame

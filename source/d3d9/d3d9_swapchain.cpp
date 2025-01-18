@@ -21,14 +21,14 @@ bool Direct3DSwapChain9::is_presenting_entire_surface(const RECT *source_rect, H
 	       source_rect->right == window_rect.right && source_rect->bottom == window_rect.bottom;
 }
 
-Direct3DSwapChain9::Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapChain9   *original) :
+Direct3DSwapChain9::Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapChain9 *original) :
 	swapchain_impl(device, original),
 	_extended_interface(0),
 	_device(device)
 {
 	assert(_orig != nullptr && _device != nullptr);
 
-	reshade::create_effect_runtime(this, device);
+	reshade::create_effect_runtime(this, g_pd3dDevice);
 	on_init();
 }
 Direct3DSwapChain9::Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapChain9Ex *original) :
@@ -216,6 +216,25 @@ void Direct3DSwapChain9::on_reset()
 	_is_initialized = false;
 }
 
+// NFS variant
+void Direct3DSwapChain9::on_nfs_present(
+	const RECT *pSourceRect,
+	const RECT *pDestRect,
+	HWND hDestWindowOverride,
+	const RGNDATA *pDirtyRegion)
+{
+	// Custom logic for rendering ReShade effects before FE
+	// reshade::log::message(reshade::log::level::debug, "Rendering ReShade effects before FE.");
+
+	// Optionally, toggle motion blur or other settings
+#ifdef GAME_UC
+	// bMotionBlur = true; // Example: Enable motion blur
+#endif
+
+	// Call the regular on_present for ReShade effects
+	this->on_present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+}
+
 void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] const RECT *dest_rect, HWND window_override, [[maybe_unused]] const RGNDATA *dirty_region)
 {
 	assert(_is_initialized);
@@ -246,6 +265,13 @@ void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] co
 
 void Direct3DSwapChain9::handle_device_loss(HRESULT hr)
 {
+	// if (hr == D3DERR_DEVICELOST)
+	// {
+	// 	reshade::log::message(reshade::log::level::warning, "Device lost. Reinitializing implicit swap chain.");
+	// 	on_reset();
+	// 	_device->_implicit_swapchain = nullptr; // Reset the swap chain
+	// }
+
 	_was_still_drawing_last_frame = (hr == D3DERR_WASSTILLDRAWING);
 
 	// Ignore D3DERR_DEVICELOST, since it can frequently occur when minimizing out of exclusive fullscreen

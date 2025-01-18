@@ -9,6 +9,9 @@
 
 struct Direct3DDevice9;
 
+// Global Direct3D device pointer
+extern Direct3DDevice9 *g_pd3dDevice;
+
 struct DECLSPEC_UUID("BC52FCE4-1EAC-40C8-84CF-863600BBAA01") Direct3DSwapChain9 final : IDirect3DSwapChain9Ex, public reshade::d3d9::swapchain_impl
 {
 	Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapChain9   *original);
@@ -39,8 +42,9 @@ struct DECLSPEC_UUID("BC52FCE4-1EAC-40C8-84CF-863600BBAA01") Direct3DSwapChain9 
 
 	void on_init();
 	void on_reset();
+	void on_nfs_present(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride,
+	                    const RGNDATA* pDirtyRegion);
 	void on_present(const RECT *source_rect, [[maybe_unused]] const RECT *dest_rect, HWND window_override, [[maybe_unused]] const RGNDATA *dirty_region);
-	// void on_nfs_present();
 	void handle_device_loss(HRESULT hr);
 
 	// bool capture_screenshot(uint8_t *buffer) const;
@@ -52,4 +56,7 @@ struct DECLSPEC_UUID("BC52FCE4-1EAC-40C8-84CF-863600BBAA01") Direct3DSwapChain9 
 	Direct3DDevice9 *const _device;
 	bool _is_initialized = false;
 	bool _was_still_drawing_last_frame = false;
+#ifdef GAME_UC
+	bool bMotionBlur;
+#endif
 };

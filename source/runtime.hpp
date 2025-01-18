@@ -32,8 +32,12 @@
 #ifdef GAME_UC
 #include "NFSUC_PreFEngHook.h"
 #endif
+#ifndef _WIN64
+// inline bool drawFrontEnd = true;
 
-inline bool drawFrontEnd = true;
+inline bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+inline bool &drawFrontEnd = *drawHUDAddr;
+
 #endif
 
 class ini_file;
@@ -57,6 +61,7 @@ namespace reshade
 
 		bool on_init();
 		void on_reset();
+		void on_nfs_present();
 		void on_present(api::command_queue *present_queue);
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
@@ -303,6 +308,8 @@ namespace reshade
 		unsigned int _effects_key_data[4] = {};
 #endif
 
+		unsigned int _toggle_fe_key_data[4] = {};
+
 		std::chrono::high_resolution_clock::duration _last_frame_duration;
 		std::chrono::high_resolution_clock::time_point _start_time, _last_present_time;
 		uint64_t _frame_count = 0;
@@ -456,10 +463,6 @@ namespace reshade
 #if RESHADE_FX
 		void draw_variable_editor();
 		void draw_technique_editor();
-#endif
-
-#ifdef GAME_UC
-		bool bMotionBlur;
 #endif
 
 		bool init_imgui_resources();
