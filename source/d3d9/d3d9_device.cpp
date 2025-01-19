@@ -2902,7 +2902,7 @@ void __stdcall FEManager_Render_Hook()
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
 	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 
-	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	g_pd3dDevice->_implicit_swapchain->on_nfs_present(nullptr, nullptr, nullptr, nullptr); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
 	FEManager_Render(TheThis);
 }
 #endif

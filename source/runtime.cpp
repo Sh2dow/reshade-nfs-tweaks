@@ -605,7 +605,7 @@ void reshade::runtime::on_nfs_present()
 	// Draw overlay // NFS CHANGE - we do this now in on_gui_present
 	//draw_gui();
 
-	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture.handle != 0 && _effects_enabled)))
+	if (_should_save_screenshot && _screenshot_save_ui && (_show_overlay || (_preview_texture.handle != 0 && _effects_enabled)))
 		save_screenshot(" ui");
 #endif
 
@@ -704,10 +704,8 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 	if (_should_save_screenshot)
 		save_screenshot();
 
-#ifndef _WIN64
-	// bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
-	// drawFrontEnd = *drawHUDAddr;
-#endif
+	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+	*drawHUDAddr = drawFrontEnd;
 
 	_frame_count++;
 	const auto current_time = std::chrono::high_resolution_clock::now();
@@ -720,7 +718,7 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 	else
 		draw_gui();
 
-	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay
+	if (_should_save_screenshot && _screenshot_save_ui && (_show_overlay
 #if RESHADE_FX
 		|| (_preview_texture != 0 && _effects_enabled)
 #endif
@@ -744,22 +742,24 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 		}
 #endif
 
-#ifndef _WIN64
-		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
-		{
-			*(bool*)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
-			*drawHUDAddr = !*drawHUDAddr;
-		}
-#endif
-
 		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
 		{
-#ifndef _WIN64
 			*drawHUDAddr = _screenshot_nfs_hud;
-#endif
 
 			_screenshot_count++;
 			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame
+		}
+
+		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
+		{
+			// Toggle drawFrontEnd value
+			drawFrontEnd = !drawFrontEnd;
+
+			// Update the actual memory address as well
+			*(bool *)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
+
+			// Log the change for debugging purposes
+			// reshade::log::message(reshade::log::level::info, ("Toggled drawFrontEnd: " + std::to_string(drawFrontEnd)).c_str());
 		}
 
 #if RESHADE_FX
@@ -1065,7 +1065,7 @@ void reshade::runtime::load_config()
 	config_get("SCREENSHOT", "SavePresetFile", _screenshot_include_preset);
 #endif
 #if RESHADE_GUI
-	config_get("SCREENSHOT", "SaveOverlayShot", _screenshot_save_gui);
+	config_get("SCREENSHOT", "SaveOverlayShot", _screenshot_save_ui);
 #endif
 	config_get("SCREENSHOT", "PostSaveCommand", _screenshot_post_save_command);
 	config_get("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);
@@ -1140,7 +1140,7 @@ void reshade::runtime::save_config() const
 	config.set("SCREENSHOT", "SavePresetFile", _screenshot_include_preset);
 #endif
 #if RESHADE_GUI
-	config.set("SCREENSHOT", "SaveOverlayShot", _screenshot_save_gui);
+	config.set("SCREENSHOT", "SaveOverlayShot", _screenshot_save_ui);
 #endif
 	config.set("SCREENSHOT", "PostSaveCommand", _screenshot_post_save_command);
 	config.set("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);

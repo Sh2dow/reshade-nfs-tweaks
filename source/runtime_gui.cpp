@@ -958,7 +958,7 @@ void reshade::runtime::draw_gui()
 
 	if (_input != nullptr)
 	{
-		imgui_io.MouseDrawCursor = _show_overlay && (!_should_save_screenshot || !_screenshot_save_gui);
+		imgui_io.MouseDrawCursor = _show_overlay && (!_should_save_screenshot || !_screenshot_save_ui);
 
 		// Scale mouse position in case render resolution does not match the window size
 		unsigned int max_position[2];
@@ -2302,7 +2302,7 @@ void reshade::runtime::draw_gui_settings()
 		modified |= ImGui::Checkbox(_("Save current preset file"), &_screenshot_include_preset);
 		modified |= ImGui::Checkbox(_("Save before and after images"), &_screenshot_save_before);
 #endif
-		modified |= ImGui::Checkbox(_("Save separate image with the overlay visible"), &_screenshot_save_gui);
+   		modified |= ImGui::Checkbox(_("Save separate image with the overlay visible"), &_screenshot_save_ui);
 
 		modified |= ImGui::Checkbox(_("NFS HUD on screenshot"), &_screenshot_nfs_hud);
 

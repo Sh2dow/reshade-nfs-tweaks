@@ -33,10 +33,10 @@
 #include "NFSUC_PreFEngHook.h"
 #endif
 #ifndef _WIN64
-// inline bool drawFrontEnd = true;
 
-inline bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
-inline bool &drawFrontEnd = *drawHUDAddr;
+// inline bool drawFrontEnd = true;
+// inline bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+inline bool drawFrontEnd = *(bool*)DRAW_FENG_BOOL_ADDR;
 
 #endif
 
@@ -387,9 +387,6 @@ namespace reshade
 		bool _screenshot_save_before = false;
 		bool _screenshot_include_preset = false;
 #endif
-#if RESHADE_GUI
-		bool _screenshot_save_gui = false;
-#endif
 		bool _screenshot_clear_alpha = true;
 		bool _screenshot_clipboard_copy = false;
 		unsigned int _screenshot_count = 0;
@@ -406,6 +403,7 @@ namespace reshade
 		bool _screenshot_post_save_command_hide_window = false;
 		bool _screenshot_nfs_hud = false;
 
+		bool _screenshot_save_ui = false;
 		bool _should_save_screenshot = false;
 		std::atomic<bool> _last_screenshot_save_successful = true;
 		bool _screenshot_directory_creation_successful = true;
