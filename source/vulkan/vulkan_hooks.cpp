@@ -242,6 +242,7 @@ PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *p
 	HOOK_PROC_OPTIONAL(CmdBuildAccelerationStructuresKHR,);
 	HOOK_PROC_OPTIONAL(CmdBuildAccelerationStructuresIndirectKHR,);
 	HOOK_PROC_OPTIONAL(CmdCopyAccelerationStructureKHR,);
+	HOOK_PROC_OPTIONAL(CmdWriteAccelerationStructuresPropertiesKHR,);
 
 	// VK_KHR_ray_tracing_pipeline
 	HOOK_PROC_OPTIONAL(CmdTraceRaysKHR,);
@@ -274,19 +275,21 @@ PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *p
 
 PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *pName)
 {
+	// Core 1_0
 	HOOK_PROC(CreateInstance);
 	HOOK_PROC(DestroyInstance);
 	HOOK_PROC(CreateDevice);
 	HOOK_PROC(DestroyDevice);
 
+	// Core 1_3
+	HOOK_PROC(GetPhysicalDeviceToolProperties);
+
 	// VK_KHR_surface
 	HOOK_PROC(CreateWin32SurfaceKHR);
 	HOOK_PROC(DestroySurfaceKHR);
 
-#ifdef VK_EXT_tooling_info
 	// VK_EXT_tooling_info
 	HOOK_PROC(GetPhysicalDeviceToolPropertiesEXT);
-#endif
 
 	// Self-intercept here as well to stay consistent with 'vkGetDeviceProcAddr' implementation
 	HOOK_PROC(GetInstanceProcAddr);

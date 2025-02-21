@@ -32,7 +32,7 @@ static auto rational_to_floating_point(DXGI_RATIONAL value) -> float
 	return value.Denominator != 0 ? static_cast<float>(value.Numerator) / static_cast<float>(value.Denominator) : 0.0f;
 }
 
-bool modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC &internal_desc)
+bool modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC &internal_desc, UINT &sync_interval)
 {
 	reshade::api::swapchain_desc desc = {};
 	desc.back_buffer.type = reshade::api::resource_type::texture_2d;
@@ -88,12 +88,15 @@ bool modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC &internal_desc)
 		internal_desc.SwapEffect = static_cast<DXGI_SWAP_EFFECT>(desc.present_mode);
 		internal_desc.Flags = desc.present_flags;
 
+		assert(desc.sync_interval <= 4 || desc.sync_interval == UINT_MAX);
+		sync_interval = desc.sync_interval;
+
 		return true;
 	}
 
 	return false;
 }
-bool modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC1 &internal_desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc, HWND window)
+bool modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC1 &internal_desc, UINT &sync_interval, DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc, HWND window)
 {
 	reshade::api::swapchain_desc desc = {};
 	desc.back_buffer.type = reshade::api::resource_type::texture_2d;
@@ -155,6 +158,9 @@ bool modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC1 &internal_desc, DXGI_SWAP_CHAIN
 		internal_desc.SwapEffect = static_cast<DXGI_SWAP_EFFECT>(desc.present_mode);
 		internal_desc.Flags = desc.present_flags;
 
+		assert(desc.sync_interval <= 4 || desc.sync_interval == UINT_MAX);
+		sync_interval = desc.sync_interval;
+
 		if (fullscreen_desc != nullptr)
 		{
 			fullscreen_desc->RefreshRate = floating_point_to_rational(desc.fullscreen_refresh_rate);
@@ -192,7 +198,7 @@ static std::string format_to_string(DXGI_FORMAT format)
 	}
 }
 
-static void dump_and_modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC &desc)
+static void dump_and_modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC &desc, UINT &sync_interval)
 {
 	reshade::log::message(reshade::log::level::info, "> Dumping swap chain description:");
 	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
@@ -215,10 +221,10 @@ static void dump_and_modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC &desc)
 	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
 
 #if RESHADE_ADDON
-	modify_swapchain_desc(desc);
+	modify_swapchain_desc(desc, sync_interval);
 #endif
 }
-static void dump_and_modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC1 &desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc = nullptr, [[maybe_unused]] HWND window = nullptr)
+static void dump_and_modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC1 &desc, UINT &sync_interval, DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fullscreen_desc = nullptr, [[maybe_unused]] HWND window = nullptr)
 {
 	reshade::log::message(reshade::log::level::info, "> Dumping swap chain description:");
 	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
@@ -251,7 +257,7 @@ static void dump_and_modify_swapchain_desc(DXGI_SWAP_CHAIN_DESC1 &desc, DXGI_SWA
 	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
 
 #if RESHADE_ADDON
-	modify_swapchain_desc(desc, fullscreen_desc, window);
+	modify_swapchain_desc(desc, sync_interval, fullscreen_desc, window);
 #endif
 }
 
@@ -308,7 +314,7 @@ UINT query_device(IUnknown *&device, com_ptr<IUnknown> &device_proxy)
 }
 
 template <typename T>
-static void init_swapchain_proxy(T *&swapchain, UINT direct3d_version, const com_ptr<IUnknown> &device_proxy, DXGI_USAGE usage)
+static void init_swapchain_proxy(T *&swapchain, UINT direct3d_version, const com_ptr<IUnknown> &device_proxy, DXGI_USAGE usage, UINT sync_interval)
 {
 	DXGISwapChain *swapchain_proxy = nullptr;
 
@@ -353,6 +359,8 @@ static void init_swapchain_proxy(T *&swapchain, UINT direct3d_version, const com
 		reshade::log::message(reshade::log::level::debug, "Returning IDXGISwapChain%hu object %p (%p).", swapchain_proxy->_interface_version, swapchain_proxy, swapchain_proxy->_orig);
 #endif
 		swapchain = swapchain_proxy;
+
+		swapchain_proxy->_sync_interval = sync_interval;
 	}
 }
 
@@ -372,7 +380,8 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory_CreateSwapChain(IDXGIFactory *pFactory, I
 		return DXGI_ERROR_INVALID_CALL;
 
 	DXGI_SWAP_CHAIN_DESC desc = *pDesc;
-	dump_and_modify_swapchain_desc(desc);
+	UINT sync_interval = UINT_MAX;
+	dump_and_modify_swapchain_desc(desc, sync_interval);
 
 	com_ptr<IUnknown> device_proxy;
 	const UINT direct3d_version = query_device(pDevice, device_proxy);
@@ -386,7 +395,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory_CreateSwapChain(IDXGIFactory *pFactory, I
 		return hr;
 	}
 
-	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage);
+	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage, sync_interval);
 
 	return hr;
 }
@@ -407,12 +416,13 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2 *pF
 		return DXGI_ERROR_INVALID_CALL;
 
 	DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
+	UINT sync_interval = UINT_MAX;
 	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc = {};
 	if (pFullscreenDesc != nullptr)
 		fullscreen_desc = *pFullscreenDesc;
 	else
 		fullscreen_desc.Windowed = TRUE;
-	dump_and_modify_swapchain_desc(desc, &fullscreen_desc, hWnd);
+	dump_and_modify_swapchain_desc(desc, sync_interval, &fullscreen_desc, hWnd);
 
 	com_ptr<IUnknown> device_proxy;
 	const UINT direct3d_version = query_device(pDevice, device_proxy);
@@ -426,7 +436,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2 *pF
 		return hr;
 	}
 
-	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage);
+	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage, sync_interval);
 
 	return hr;
 }
@@ -446,8 +456,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow(IDXGIFactor
 		return DXGI_ERROR_INVALID_CALL;
 
 	DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
+	UINT sync_interval = UINT_MAX;
 	// UWP applications cannot be set into fullscreen mode
-	dump_and_modify_swapchain_desc(desc);
+	dump_and_modify_swapchain_desc(desc, sync_interval);
 
 	com_ptr<IUnknown> device_proxy;
 	const UINT direct3d_version = query_device(pDevice, device_proxy);
@@ -461,7 +472,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow(IDXGIFactor
 		return hr;
 	}
 
-	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage);
+	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage, sync_interval);
 
 	return hr;
 }
@@ -481,8 +492,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition(IDXGIFacto
 		return DXGI_ERROR_INVALID_CALL;
 
 	DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
+	UINT sync_interval = UINT_MAX;
 	// Composition swap chains cannot be set into fullscreen mode
-	dump_and_modify_swapchain_desc(desc);
+	dump_and_modify_swapchain_desc(desc, sync_interval);
 
 	com_ptr<IUnknown> device_proxy;
 	const UINT direct3d_version = query_device(pDevice, device_proxy);
@@ -496,7 +508,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition(IDXGIFacto
 		return hr;
 	}
 
-	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage);
+	init_swapchain_proxy(*ppSwapChain, direct3d_version, device_proxy, desc.BufferUsage, sync_interval);
 
 	return hr;
 }
@@ -552,6 +564,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
 	//   IDXGIFactory4 {1BC6EA02-EF36-464F-BF0C-21CA39E5168A}
 	//   IDXGIFactory5 {7632E1f5-EE65-4DCA-87FD-84CD75F8838D}
 	//   IDXGIFactory6 {C1B6694F-FF09-44A9-B03C-77900A0A1D17}
+	//   IDXGIFactory7 {A4966EED-76DB-44DA-84C1-EE9A7AFB20A8}
 
 	reshade::log::message(
 		reshade::log::level::info,
@@ -571,7 +584,30 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
 
 	// It is crucial that ReShade hooks this after the Steam overlay already hooked it, so that ReShade is called first and the Steam overlay is called through the trampoline below
 	// This is because the Steam overlay only hooks the swap chain creation functions when the vtable entries for them still point to the original functions, it will no longer do so once ReShade replaced them ("... points to another module, skipping hooks" in GameOverlayRenderer.log)
-	const HRESULT hr = trampoline(Flags, riid, ppFactory);
+
+	// Upgrade factory interface to the highest available at creation, to ensure the virtual function table cannot be replaced afterwards during 'QueryInterface'
+	static constexpr IID iid_lookup[] = {
+		__uuidof(IDXGIFactory),
+		__uuidof(IDXGIFactory1),
+		__uuidof(IDXGIFactory2),
+		__uuidof(IDXGIFactory3),
+		__uuidof(IDXGIFactory4),
+		__uuidof(IDXGIFactory5),
+		__uuidof(IDXGIFactory6),
+		__uuidof(IDXGIFactory7),
+	};
+	HRESULT hr = E_NOINTERFACE;
+	if (std::find(std::begin(iid_lookup), std::end(iid_lookup), riid) == std::end(iid_lookup))
+	{
+		hr = trampoline(Flags, riid, ppFactory); // Fall back in case of unknown interface version
+	}
+	else
+	{
+		for (auto it = std::rbegin(iid_lookup); it != std::rend(iid_lookup); ++it)
+			if (SUCCEEDED(hr = trampoline(Flags, *it, ppFactory)) || *it == riid)
+				break;
+	}
+
 	if (FAILED(hr))
 	{
 		reshade::log::message(reshade::log::level::warning, "CreateDXGIFactory2 failed with error code %s.", reshade::log::hr_to_string(hr).c_str());

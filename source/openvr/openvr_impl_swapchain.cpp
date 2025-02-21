@@ -110,8 +110,8 @@ reshade::api::subresource_box reshade::openvr::swapchain_impl::get_eye_subresour
 	const api::resource_desc desc = _device->get_resource_desc(_side_by_side_texture);
 
 	return api::subresource_box {
-		static_cast<int32_t>(eye * (desc.texture.width / 2)), 0, 0,
-		static_cast<int32_t>((eye + 1) * (desc.texture.width / 2)), static_cast<int32_t>(desc.texture.height), 1
+		eye * (desc.texture.width / 2), 0, 0,
+		(eye + 1) * (desc.texture.width / 2), desc.texture.height, 1
 	};
 }
 
@@ -121,7 +121,7 @@ bool reshade::openvr::swapchain_impl::on_init()
 	assert(_side_by_side_texture != 0);
 
 #if RESHADE_ADDON
-	invoke_addon_event<addon_event::init_swapchain>(this);
+	invoke_addon_event<addon_event::init_swapchain>(this, false);
 #endif
 
 	init_effect_runtime(this);
@@ -136,7 +136,7 @@ void reshade::openvr::swapchain_impl::on_reset()
 	reset_effect_runtime(this);
 
 #if RESHADE_ADDON
-	invoke_addon_event<addon_event::destroy_swapchain>(this);
+	invoke_addon_event<addon_event::destroy_swapchain>(this, false);
 #endif
 
 	_device->destroy_resource(_side_by_side_texture);
@@ -155,11 +155,11 @@ bool reshade::openvr::swapchain_impl::on_vr_submit(api::command_queue *queue, vr
 	reshade::api::subresource_box source_box;
 	if (bounds != nullptr)
 	{
-		source_box.left  = static_cast<int32_t>(std::floor(source_desc.texture.width * std::min(bounds->uMin, bounds->uMax)));
-		source_box.top   = static_cast<int32_t>(std::floor(source_desc.texture.height * std::min(bounds->vMin, bounds->vMax)));
+		source_box.left  = static_cast<uint32_t>(std::floor(source_desc.texture.width * std::min(bounds->uMin, bounds->uMax)));
+		source_box.top   = static_cast<uint32_t>(std::floor(source_desc.texture.height * std::min(bounds->vMin, bounds->vMax)));
 		source_box.front = 0;
-		source_box.right  = static_cast<int32_t>(std::ceil(source_desc.texture.width * std::max(bounds->uMin, bounds->uMax)));
-		source_box.bottom = static_cast<int32_t>(std::ceil(source_desc.texture.height * std::max(bounds->vMin, bounds->vMax)));
+		source_box.right  = static_cast<uint32_t>(std::ceil(source_desc.texture.width * std::max(bounds->uMin, bounds->uMax)));
+		source_box.bottom = static_cast<uint32_t>(std::ceil(source_desc.texture.height * std::max(bounds->vMin, bounds->vMax)));
 		source_box.back   = 1;
 	}
 	else

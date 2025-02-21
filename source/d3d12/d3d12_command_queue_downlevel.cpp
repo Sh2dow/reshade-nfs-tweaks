@@ -27,7 +27,7 @@ D3D12CommandQueueDownlevel::~D3D12CommandQueueDownlevel()
 		reshade::reset_effect_runtime(this);
 
 #if RESHADE_ADDON
-		reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this);
+		reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this, false);
 #endif
 	}
 
@@ -64,7 +64,7 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueueDownlevel::Present(ID3D12GraphicsComm
 	assert(pSourceTex2D != nullptr);
 
 	// Synchronize access to this command queue while events are invoked and the immediate command list may be accessed
-	std::unique_lock<std::shared_mutex> lock(_parent_queue->_mutex);
+	std::unique_lock<std::recursive_mutex> lock(_parent_queue->_mutex);
 
 	_hwnd = hWindow;
 	_swap_index = (_swap_index + 1) % static_cast<UINT>(_back_buffers.size());
@@ -75,8 +75,9 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueueDownlevel::Present(ID3D12GraphicsComm
 		reshade::reset_effect_runtime(this);
 
 #if RESHADE_ADDON
-		if (_back_buffers[0] != nullptr)
-			reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this);
+		const bool resize = (_back_buffers[0] != nullptr);
+		if (resize)
+			reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this, resize);
 #endif
 
 		// Reduce number of back buffers if less are used than predicted
@@ -90,7 +91,7 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueueDownlevel::Present(ID3D12GraphicsComm
 		if (_back_buffers[0] != nullptr)
 		{
 #if RESHADE_ADDON
-			reshade::invoke_addon_event<reshade::addon_event::init_swapchain>(this);
+			reshade::invoke_addon_event<reshade::addon_event::init_swapchain>(this, resize);
 #endif
 
 			reshade::init_effect_runtime(this);

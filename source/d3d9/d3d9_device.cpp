@@ -47,11 +47,13 @@ const reshade::api::subresource_box *convert_rect_to_box(const RECT *rect, resha
 	if (rect == nullptr)
 		return nullptr;
 
-	box.left = rect->left;
-	box.top = rect->top;
+	assert(rect->left >= 0 && rect->top >= 0 && rect->right >= 0 && rect->bottom >= 0);
+
+	box.left = static_cast<uint32_t>(rect->left);
+	box.top = static_cast<uint32_t>(rect->top);
 	box.front = 0;
-	box.right = rect->right;
-	box.bottom = rect->bottom;
+	box.right = static_cast<uint32_t>(rect->right);
+	box.bottom = static_cast<uint32_t>(rect->bottom);
 	box.back = 1;
 
 	return &box;
@@ -61,11 +63,13 @@ const reshade::api::subresource_box *convert_rect_to_box(const POINT *point, LON
 	if (point == nullptr)
 		return nullptr;
 
-	box.left = point->x;
-	box.top = point->y;
+	assert(point->x >= 0 && point->y >= 0 && width >= 0 && height >= 0);
+
+	box.left = static_cast<uint32_t>(point->x);
+	box.top = static_cast<uint32_t>(point->y);
 	box.front = 0;
-	box.right = point->x + width;
-	box.bottom = point->y + height;
+	box.right = static_cast<uint32_t>(point->x + width);
+	box.bottom = static_cast<uint32_t>(point->y + height);
 	box.back = 1;
 
 	return &box;
@@ -322,7 +326,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresent
 	dump_and_modify_present_parameters(pp, _d3d.get(), _cp.AdapterOrdinal, _cp.hFocusWindow);
 
 	// Release all resources before performing reset
-	_implicit_swapchain->on_reset();
+	_implicit_swapchain->on_reset(true);
 	on_reset();
 
 	assert(!g_in_d3d9_runtime && !g_in_dxgi_runtime);
@@ -339,7 +343,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::Reset(D3DPRESENT_PARAMETERS *pPresent
 	if (SUCCEEDED(hr))
 	{
 		on_init();
-		_implicit_swapchain->on_init();
+		_implicit_swapchain->on_init(true);
 	}
 	else
 	{
@@ -1082,7 +1086,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::StretchRect(IDirect3DSurface9 *pSrcSu
 
 			if (reshade::invoke_addon_event<reshade::addon_event::resolve_texture_region>(this,
 					src_resource, src_subresource, convert_rect_to_box(pSrcRect, src_box),
-					dst_resource, dst_subresource, pDstRect != nullptr ? pDstRect->left : 0, pDstRect != nullptr ? pDstRect->top : 0, 0,
+					dst_resource, dst_subresource, static_cast<uint32_t>(pDstRect != nullptr ? pDstRect->left : 0), static_cast<uint32_t>(pDstRect != nullptr ? pDstRect->top : 0), 0,
 					reshade::d3d9::convert_format(desc.Format)))
 				return D3D_OK;
 		}
@@ -2572,7 +2576,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::ResetEx(D3DPRESENT_PARAMETERS *pPrese
 	dump_and_modify_present_parameters(pp, fullscreen_mode, _d3d.get(), _cp.AdapterOrdinal, _cp.hFocusWindow);
 
 	// Release all resources before performing reset
-	_implicit_swapchain->on_reset();
+	_implicit_swapchain->on_reset(true);
 	on_reset();
 
 	assert(!g_in_d3d9_runtime && !g_in_dxgi_runtime);
@@ -2589,7 +2593,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::ResetEx(D3DPRESENT_PARAMETERS *pPrese
 	if (SUCCEEDED(hr))
 	{
 		on_init();
-		_implicit_swapchain->on_init();
+		_implicit_swapchain->on_init(true);
 	}
 	else
 	{

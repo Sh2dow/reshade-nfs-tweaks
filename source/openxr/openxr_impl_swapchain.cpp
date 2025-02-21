@@ -50,8 +50,8 @@ reshade::api::subresource_box reshade::openxr::swapchain_impl::get_view_subresou
 	const api::resource_desc desc = _device->get_resource_desc(_side_by_side_texture);
 
 	return api::subresource_box {
-		static_cast<int32_t>(index * (desc.texture.width / view_count)), 0, 0,
-		static_cast<int32_t>((index + 1) * (desc.texture.width / view_count)), static_cast<int32_t>(desc.texture.height), 1
+		index * (desc.texture.width / view_count), 0, 0,
+		(index + 1) * (desc.texture.width / view_count), desc.texture.height, 1
 	};
 }
 
@@ -61,7 +61,7 @@ bool reshade::openxr::swapchain_impl::on_init()
 	assert(_side_by_side_texture != 0);
 
 #if RESHADE_ADDON
-	invoke_addon_event<addon_event::init_swapchain>(this);
+	invoke_addon_event<addon_event::init_swapchain>(this, false);
 #endif
 
 	init_effect_runtime(this);
@@ -76,7 +76,7 @@ void reshade::openxr::swapchain_impl::on_reset()
 	reset_effect_runtime(this);
 
 #if RESHADE_ADDON
-	invoke_addon_event<addon_event::destroy_swapchain>(this);
+	invoke_addon_event<addon_event::destroy_swapchain>(this, false);
 #endif
 
 	_device->destroy_resource(_side_by_side_texture);

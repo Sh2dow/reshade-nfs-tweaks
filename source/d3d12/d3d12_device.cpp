@@ -252,11 +252,18 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateGraphicsPipelineState(const D3D12_G
 
 	HRESULT hr = S_OK;
 #if RESHADE_ADDON >= 2
+	assert(!g_in_d3d12_pipeline_creation);
+	g_in_d3d12_pipeline_creation = true;
+
 	if (ppPipelineState == nullptr || // This can happen when application only wants to validate input parameters
 		riid != __uuidof(ID3D12PipelineState) ||
 		!invoke_create_and_init_pipeline_event(*pDesc, *reinterpret_cast<ID3D12PipelineState **>(ppPipelineState), hr, true))
 #endif
 		hr = _orig->CreateGraphicsPipelineState(pDesc, riid, ppPipelineState);
+
+#if RESHADE_ADDON >= 2
+	g_in_d3d12_pipeline_creation = false;
+#endif
 
 #if RESHADE_VERBOSE_LOG
 	if (FAILED(hr) && ppPipelineState != nullptr)
@@ -274,11 +281,18 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateComputePipelineState(const D3D12_CO
 
 	HRESULT hr = S_OK;
 #if RESHADE_ADDON >= 2
+	assert(!g_in_d3d12_pipeline_creation);
+	g_in_d3d12_pipeline_creation = true;
+
 	if (ppPipelineState == nullptr || // This can happen when application only wants to validate input parameters
 		riid != __uuidof(ID3D12PipelineState) ||
 		!invoke_create_and_init_pipeline_event(*pDesc, *reinterpret_cast<ID3D12PipelineState **>(ppPipelineState), hr, true))
 #endif
 		hr = _orig->CreateComputePipelineState(pDesc, riid, ppPipelineState);
+
+#if RESHADE_ADDON >= 2
+	g_in_d3d12_pipeline_creation = false;
+#endif
 
 #if RESHADE_VERBOSE_LOG
 	if (FAILED(hr) && ppPipelineState != nullptr)
@@ -342,12 +356,11 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPT
 		this, pDescriptorHeapDesc, reshade::log::iid_to_string(riid).c_str(), ppvHeap);
 #endif
 
-	if (pDescriptorHeapDesc == nullptr)
-		return E_INVALIDARG;
-
 	const HRESULT hr = _orig->CreateDescriptorHeap(pDescriptorHeapDesc, riid, ppvHeap);
 	if (SUCCEEDED(hr))
 	{
+		assert(pDescriptorHeapDesc != nullptr);
+
 #if RESHADE_ADDON >= 2
 		if (ppvHeap != nullptr && pDescriptorHeapDesc->Type <= D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
 		{
@@ -447,10 +460,8 @@ void    STDMETHODCALLTYPE D3D12Device::CreateShaderResourceView(ID3D12Resource *
 	if (acceleration_structure)
 	{
 		if (pResource != nullptr)
-		{
+			// 'D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV::Location' describes GPU address, but 'reshade::api::resource_view::buffer::offset' only offset from resource base, so subtract resource base GPU address
 			desc.buffer.offset -= pResource->GetGPUVirtualAddress();
-			desc.buffer.size = pResource->GetDesc().Width - desc.buffer.offset;
-		}
 
 		usage = reshade::api::resource_usage::acceleration_structure;
 	}
@@ -459,13 +470,11 @@ void    STDMETHODCALLTYPE D3D12Device::CreateShaderResourceView(ID3D12Resource *
 	if (pResource != nullptr &&
 		reshade::invoke_addon_event<reshade::addon_event::create_resource_view>(this, to_handle(pResource), usage, desc))
 	{
-		if (acceleration_structure)
-		{
-			desc.buffer.offset += pResource->GetGPUVirtualAddress();
-		}
-
 		reshade::d3d12::convert_resource_view_desc(desc, internal_desc);
 		pDesc = &internal_desc;
+
+		if (acceleration_structure)
+			internal_desc.RaytracingAccelerationStructure.Location += pResource->GetGPUVirtualAddress();
 	}
 #endif
 
@@ -639,6 +648,12 @@ void    STDMETHODCALLTYPE D3D12Device::CopyDescriptors(UINT NumDestDescriptorRan
 			uint32_t num_copies = 0;
 			for (UINT i = 0; i < NumDestDescriptorRanges; ++i)
 				num_copies += (pDestDescriptorRangeSizes != nullptr ? pDestDescriptorRangeSizes[i] : 1);
+#ifndef NDEBUG
+			uint32_t num_copies_source = 0;
+			for (UINT i = 0; i < NumSrcDescriptorRanges; ++i)
+				num_copies_source += (pSrcDescriptorRangeSizes != nullptr ? pSrcDescriptorRangeSizes[i]: 1);
+			assert(num_copies == num_copies_source);
+#endif
 			temp_mem<reshade::api::descriptor_table_copy, 32> copies(num_copies);
 
 			num_copies = 0;
@@ -651,10 +666,10 @@ void    STDMETHODCALLTYPE D3D12Device::CopyDescriptors(UINT NumDestDescriptorRan
 				{
 					const UINT src_count = (pSrcDescriptorRangeSizes != nullptr ? pSrcDescriptorRangeSizes[src_range] : 1);
 
-					copies[num_copies].dest_table = convert_to_descriptor_table(pDestDescriptorRangeStarts[dst_range]);
+					copies[num_copies].dest_table = convert_to_descriptor_table(offset_descriptor_handle(pDestDescriptorRangeStarts[dst_range], dst_offset, DescriptorHeapsType));
 					copies[num_copies].dest_binding = 0;
 					copies[num_copies].dest_array_offset = 0;
-					copies[num_copies].source_table = convert_to_descriptor_table(pSrcDescriptorRangeStarts[src_range]);
+					copies[num_copies].source_table = convert_to_descriptor_table(offset_descriptor_handle(pSrcDescriptorRangeStarts[src_range], src_offset, DescriptorHeapsType));
 					copies[num_copies].source_binding = 0;
 					copies[num_copies].source_array_offset = 0;
 
@@ -689,12 +704,12 @@ void    STDMETHODCALLTYPE D3D12Device::CopyDescriptors(UINT NumDestDescriptorRan
 		}
 
 		temp_mem<D3D12_CPU_DESCRIPTOR_HANDLE, 32> descriptor_range_starts(NumDestDescriptorRanges + NumSrcDescriptorRanges);
-		for (UINT i = 0; i < NumSrcDescriptorRanges; ++i)
-			descriptor_range_starts[i] = convert_to_original_cpu_descriptor_handle(convert_to_descriptor_table(pSrcDescriptorRangeStarts[i]));
 		for (UINT i = 0; i < NumDestDescriptorRanges; ++i)
-			descriptor_range_starts[NumSrcDescriptorRanges + i] = convert_to_original_cpu_descriptor_handle(convert_to_descriptor_table(pDestDescriptorRangeStarts[i]));
+			descriptor_range_starts[i] = convert_to_original_cpu_descriptor_handle(convert_to_descriptor_table(pDestDescriptorRangeStarts[i]));
+		for (UINT i = 0; i < NumSrcDescriptorRanges; ++i)
+			descriptor_range_starts[NumDestDescriptorRanges + i] = convert_to_original_cpu_descriptor_handle(convert_to_descriptor_table(pSrcDescriptorRangeStarts[i]));
 
-		_orig->CopyDescriptors(NumDestDescriptorRanges, descriptor_range_starts.p + NumSrcDescriptorRanges, pDestDescriptorRangeSizes, NumSrcDescriptorRanges, descriptor_range_starts.p, pSrcDescriptorRangeSizes, DescriptorHeapsType);
+		_orig->CopyDescriptors(NumDestDescriptorRanges, descriptor_range_starts.p, pDestDescriptorRangeSizes, NumSrcDescriptorRanges, descriptor_range_starts.p + NumDestDescriptorRanges, pSrcDescriptorRangeSizes, DescriptorHeapsType);
 		return;
 	}
 	else
@@ -710,7 +725,9 @@ void    STDMETHODCALLTYPE D3D12Device::CopyDescriptors(UINT NumDestDescriptorRan
 			{
 				const UINT src_count = (pSrcDescriptorRangeSizes != nullptr ? pSrcDescriptorRangeSizes[src_range] : 1);
 
-				register_resource_view(offset_descriptor_handle(pDestDescriptorRangeStarts[dst_range], dst_offset, DescriptorHeapsType), offset_descriptor_handle(pSrcDescriptorRangeStarts[src_range], src_offset, DescriptorHeapsType));
+				register_resource_view(
+					offset_descriptor_handle(pDestDescriptorRangeStarts[dst_range], dst_offset, DescriptorHeapsType),
+					offset_descriptor_handle(pSrcDescriptorRangeStarts[src_range], src_offset, DescriptorHeapsType));
 
 				src_offset += 1;
 				dst_offset += 1;
@@ -1138,11 +1155,18 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreatePipelineState(const D3D12_PIPELINE_
 
 	HRESULT hr = S_OK;
 #if RESHADE_ADDON >= 2
+	assert(!g_in_d3d12_pipeline_creation);
+	g_in_d3d12_pipeline_creation = true;
+
 	if (ppPipelineState == nullptr || // This can happen when application only wants to validate input parameters
 		riid != __uuidof(ID3D12PipelineState) ||
 		!invoke_create_and_init_pipeline_event(*pDesc, *reinterpret_cast<ID3D12PipelineState **>(ppPipelineState), hr, true))
 #endif
 		hr = static_cast<ID3D12Device2 *>(_orig)->CreatePipelineState(pDesc, riid, ppPipelineState);
+
+#if RESHADE_ADDON >= 2
+	g_in_d3d12_pipeline_creation = false;
+#endif
 
 #if RESHADE_VERBOSE_LOG
 	if (FAILED(hr) && ppPipelineState != nullptr)
@@ -1303,6 +1327,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateReservedResource1(const D3D12_RESOU
 	{
 		reshade::d3d12::convert_resource_desc(desc, internal_desc);
 		pDesc = &internal_desc;
+		// Resource format may have been altered, which would make the optimized clear value mismatch, so just unset it
 		pOptimizedClearValue = nullptr;
 	}
 #endif
@@ -1376,11 +1401,18 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateStateObject(const D3D12_STATE_OBJEC
 
 	HRESULT hr = S_OK;
 #if RESHADE_ADDON >= 2
+	assert(!g_in_d3d12_pipeline_creation);
+	g_in_d3d12_pipeline_creation = true;
+
 	if (ppStateObject == nullptr ||
 		riid != __uuidof(ID3D12StateObject) ||
 		!invoke_create_and_init_pipeline_event(*pDesc, nullptr, *reinterpret_cast<ID3D12StateObject **>(ppStateObject), hr))
 #endif
 		hr = static_cast<ID3D12Device5 *>(_orig)->CreateStateObject(pDesc, riid, ppStateObject);
+
+#if RESHADE_ADDON >= 2
+	g_in_d3d12_pipeline_creation = false;
+#endif
 
 #if RESHADE_VERBOSE_LOG
 	if (FAILED(hr) && ppStateObject != nullptr)
@@ -1465,6 +1497,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommittedResource2(const D3D12_HEAP
 		reshade::d3d12::convert_resource_desc(desc, internal_desc, heap_props, HeapFlags);
 		pHeapProperties = &heap_props;
 		pDesc = &internal_desc;
+		// Resource format may have been altered, which would make the optimized clear value mismatch, so just unset it
 		pOptimizedClearValue = nullptr;
 	}
 #endif
@@ -1707,6 +1740,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreatePlacedResource2(ID3D12Heap *pHeap, 
 	{
 		reshade::d3d12::convert_resource_desc(desc, internal_desc);
 		pDesc = &internal_desc;
+		// Resource format may have been altered, which would make the optimized clear value mismatch, so just unset it
 		pOptimizedClearValue = nullptr;
 	}
 #endif
@@ -2037,7 +2071,9 @@ bool D3D12Device::invoke_create_and_init_pipeline_event(const D3D12_STATE_OBJECT
 								std::find_if(desc.pExports, desc.pExports + desc.NumExports,
 									[record_name = string_table + function_info->unmangled_name](const D3D12_EXPORT_DESC &e) {
 										std::string name;
-										utf8::unchecked::utf16to8(e.Name, e.Name + std::wcslen(e.Name), std::back_inserter(name));
+										// If the 'ExportToRename' field is non-null, 'Name' refers to the new name to use for it when exported
+										const LPCWSTR name_wide = (e.ExportToRename != nullptr) ? e.ExportToRename : e.Name;
+										utf8::unchecked::utf16to8(name_wide, name_wide + std::wcslen(name_wide), std::back_inserter(name));
 										return name == record_name;
 									}) == desc.pExports + desc.NumExports)
 								continue;
@@ -2551,13 +2587,15 @@ bool D3D12Device::invoke_create_and_init_pipeline_event(const D3D12_COMPUTE_PIPE
 		D3D12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE root_signature;
 		D3D12_PIPELINE_STATE_STREAM_CS cs;
 		D3D12_PIPELINE_STATE_STREAM_NODE_MASK node_mask;
-		D3D12_PIPELINE_STATE_STREAM_CACHED_PSO cached_pso;
+		// D3D12_PIPELINE_STATE_STREAM_CACHED_PSO cached_pso;
 		D3D12_PIPELINE_STATE_STREAM_FLAGS flags;
 	} stream_data = {
 		{ internal_desc.pRootSignature },
 		{ internal_desc.CS },
 		{ internal_desc.NodeMask != 0 ? internal_desc.NodeMask : 1 },
-		{ internal_desc.CachedPSO },
+		// Do not pass along cached PSO, since the data can mismatch if it was previously created without the redirection from 'CreateGraphicsPipelineState' to 'CreatePipelineState' and
+		// thus cause creation to fail with 'E_INVALIDARG' (makes Need for Speed: Unbound error out on startup)
+		//   { internal_desc.CachedPSO },
 		{ internal_desc.Flags }
 	};
 
@@ -2585,7 +2623,7 @@ bool D3D12Device::invoke_create_and_init_pipeline_event(const D3D12_GRAPHICS_PIP
 		D3D12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT depth_stencil_format;
 		D3D12_PIPELINE_STATE_STREAM_SAMPLE_DESC sample_desc;
 		D3D12_PIPELINE_STATE_STREAM_NODE_MASK node_mask;
-		D3D12_PIPELINE_STATE_STREAM_CACHED_PSO cached_pso;
+		// D3D12_PIPELINE_STATE_STREAM_CACHED_PSO cached_pso;
 		D3D12_PIPELINE_STATE_STREAM_FLAGS flags;
 	} stream_data = {
 		{ internal_desc.pRootSignature },
@@ -2606,7 +2644,9 @@ bool D3D12Device::invoke_create_and_init_pipeline_event(const D3D12_GRAPHICS_PIP
 		{ internal_desc.DSVFormat },
 		{ internal_desc.SampleDesc },
 		{ internal_desc.NodeMask != 0 ? internal_desc.NodeMask : 1 }, // See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_node_mask#remarks
-		{ internal_desc.CachedPSO },
+		// Do not pass along cached PSO, since the data can mismatch if it was previously created without the redirection from 'CreateComputePipelineState' to 'CreatePipelineState' and
+		// thus cause creation to fail with 'E_INVALIDARG'
+		//   { internal_desc.CachedPSO },
 		{ internal_desc.Flags }
 	};
 
@@ -2630,6 +2670,7 @@ bool D3D12Device::invoke_create_and_init_pipeline_layout_event(UINT node_mask, c
 	std::vector<std::vector<reshade::api::descriptor_range>> ranges;
 	std::vector<reshade::api::descriptor_range_with_static_samplers> ranges_with_static_samplers;
 	std::vector<reshade::api::sampler_desc> static_samplers;
+	D3D12_ROOT_SIGNATURE_FLAGS flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
 	if (const auto part = static_cast<uint32_t *>(const_cast<void *>(
 			find_dxbc_part(
@@ -2640,6 +2681,7 @@ bool D3D12Device::invoke_create_and_init_pipeline_layout_event(UINT node_mask, c
 		const bool has_pipeline_layout_event = reshade::has_addon_event<reshade::addon_event::create_pipeline_layout>() || reshade::has_addon_event<reshade::addon_event::init_pipeline_layout>();
 
 		const uint32_t version = part[0];
+		flags = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>(part[5]);
 
 		if (has_pipeline_layout_event &&
 			(version == D3D_ROOT_SIGNATURE_VERSION_1_0 || version == D3D_ROOT_SIGNATURE_VERSION_1_1 || version == D3D_ROOT_SIGNATURE_VERSION_1_2))
@@ -2822,7 +2864,7 @@ bool D3D12Device::invoke_create_and_init_pipeline_layout_event(UINT node_mask, c
 		reshade::invoke_addon_event<reshade::addon_event::create_pipeline_layout>(this, param_count, param_data) || modified))
 	{
 		reshade::api::pipeline_layout layout;
-		hr = device_impl::create_pipeline_layout(param_count, param_data, &layout) ? S_OK : E_FAIL;
+		hr = device_impl::create_pipeline_layout(param_count, param_data, &layout, flags) ? S_OK : E_FAIL;
 		root_signature = reinterpret_cast<ID3D12RootSignature *>(layout.handle);
 	}
 	else

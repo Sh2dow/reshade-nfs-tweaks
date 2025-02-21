@@ -15,11 +15,11 @@ const RECT *convert_box_to_rect(const reshade::api::subresource_box *box, RECT &
 	if (box == nullptr)
 		return nullptr;
 
-	rect.left = box->left;
-	rect.top = box->top;
+	rect.left = static_cast<LONG>(box->left);
+	rect.top = static_cast<LONG>(box->top);
 	assert(box->front == 0);
-	rect.right = box->right;
-	rect.bottom = box->bottom;
+	rect.right = static_cast<LONG>(box->right);
+	rect.bottom = static_cast<LONG>(box->bottom);
 	assert(box->back == 1);
 
 	return &rect;
@@ -1010,8 +1010,10 @@ void reshade::d3d9::device_impl::unmap_texture_region(api::resource resource, ui
 void reshade::d3d9::device_impl::update_buffer_region(const void *data, api::resource resource, uint64_t offset, uint64_t size)
 {
 	assert(resource != 0);
-	assert(data != nullptr);
 	assert(offset <= std::numeric_limits<UINT>::max() && size <= std::numeric_limits<UINT>::max());
+
+	if (data == nullptr)
+		return;
 
 	const auto object = reinterpret_cast<IDirect3DResource9 *>(resource.handle);
 
@@ -1044,7 +1046,9 @@ void reshade::d3d9::device_impl::update_buffer_region(const void *data, api::res
 void reshade::d3d9::device_impl::update_texture_region(const api::subresource_data &data, api::resource resource, uint32_t subresource, const api::subresource_box *box)
 {
 	assert(resource != 0);
-	assert(data.data != nullptr);
+
+	if (data.data == nullptr)
+		return;
 
 	const auto object = reinterpret_cast<IDirect3DResource9 *>(resource.handle);
 
@@ -1874,21 +1878,26 @@ void reshade::d3d9::device_impl::update_descriptor_tables(uint32_t count, const 
 	}
 }
 
-bool reshade::d3d9::device_impl::create_query_heap(api::query_type type, uint32_t size, api::query_heap *out_heap)
+bool reshade::d3d9::device_impl::create_query_heap(api::query_type type, uint32_t count, api::query_heap *out_heap)
 {
+	*out_heap = { 0 };
+
+	if (type != api::query_type::occlusion &&
+		type != api::query_type::timestamp)
+		return false;
+
 	const auto impl = new query_heap_impl();
 	impl->type = type;
-	impl->queries.resize(size);
+	impl->queries.resize(count);
 
 	const D3DQUERYTYPE internal_type = convert_query_type(type);
 
-	for (uint32_t i = 0; i < size; ++i)
+	for (uint32_t i = 0; i < count; ++i)
 	{
 		if (FAILED(_orig->CreateQuery(internal_type, &impl->queries[i])))
 		{
 			delete impl;
 
-			*out_heap = { 0 };
 			return false;
 		}
 	}

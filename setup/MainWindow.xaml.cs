@@ -85,6 +85,9 @@ namespace ReShade.Setup
 							case "dxgi":
 								currentInfo.targetApi = Api.DXGI;
 								break;
+							case "ddraw":
+								currentInfo.targetApi = Api.DDraw;
+								break;
 							case "opengl":
 								currentInfo.targetApi = Api.OpenGL;
 								break;
@@ -454,6 +457,9 @@ namespace ReShade.Setup
 				case Api.DXGI:
 					startInfo.Arguments += " --api dxgi";
 					break;
+				case Api.DDraw:
+					startInfo.Arguments += " --api ddraw";
+					break;
 				case Api.OpenGL:
 					startInfo.Arguments += " --api opengl";
 					break;
@@ -502,6 +508,8 @@ namespace ReShade.Setup
 				return;
 			}
 
+			UpdateStatus("Downloading compatibility information ...");
+
 			// Attempt to download compatibility list
 			using (var client = new WebClient())
 			{
@@ -524,6 +532,8 @@ namespace ReShade.Setup
 
 		void InstallStep_AnalyzeExecutable()
 		{
+			DownloadCompatibilityIni();
+
 			UpdateStatus("Analyzing executable ...");
 
 			// In case this is the bootstrap executable of an Unreal Engine game, try and find the actual game executable for it
@@ -549,16 +559,26 @@ namespace ReShade.Setup
 
 			bool isApiD3D9 = false;
 			bool isApiDXGI = false;
+			bool isApiDDraw = false;
 			bool isApiOpenGL = false;
 			bool isApiVulkan = false;
 			currentInfo.targetOpenXR = false;
 
 			string basePath = Path.GetDirectoryName(currentInfo.targetPath);
+			if (basePath.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.Windows)))
+			{
+				UpdateStatusAndFinish(false, "Installation to the Windows directory is prohibited.");
+				return;
+			}
 
 			// Check whether the API is specified in the compatibility list, in which case setup can continue right away
-			DownloadCompatibilityIni();
-
 			string executableName = Path.GetFileName(currentInfo.targetPath);
+			if (compatibilityIni?.GetString(executableName, "Banned") == "1")
+			{
+				UpdateStatusAndFinish(false, "The target application is known to have blocked or banned the usage of ReShade. Cannot continue installation.");
+				return;
+			}
+
 			if (compatibilityIni != null && compatibilityIni.HasValue(executableName, "RenderApi"))
 			{
 				if (compatibilityIni.HasValue(executableName, "InstallTarget"))
@@ -576,6 +596,10 @@ namespace ReShade.Setup
 				{
 					isApiDXGI = true;
 				}
+				else if (api == "DDraw")
+				{
+					isApiDDraw = true;
+				}
 				else if (api == "OpenGL")
 				{
 					isApiOpenGL = true;
@@ -590,6 +614,7 @@ namespace ReShade.Setup
 				bool isApiD3D8 = peInfo.Modules.Any(s => s.StartsWith("d3d8", StringComparison.OrdinalIgnoreCase));
 				isApiD3D9 = isApiD3D8 || peInfo.Modules.Any(s => s.StartsWith("d3d9", StringComparison.OrdinalIgnoreCase));
 				isApiDXGI = peInfo.Modules.Any(s => s.StartsWith("dxgi", StringComparison.OrdinalIgnoreCase) || s.StartsWith("d3d1", StringComparison.OrdinalIgnoreCase) || s.Contains("GFSDK")); // Assume DXGI when GameWorks SDK is in use
+				isApiDDraw = peInfo.Modules.Any(s => s.StartsWith("ddraw", StringComparison.OrdinalIgnoreCase));
 				isApiOpenGL = peInfo.Modules.Any(s => s.StartsWith("opengl32", StringComparison.OrdinalIgnoreCase));
 				isApiVulkan = peInfo.Modules.Any(s => s.StartsWith("vulkan-1", StringComparison.OrdinalIgnoreCase));
 				// currentInfo.targetOpenXR = peInfo.Modules.Any(s => s.StartsWith("openxr_loader", StringComparison.OrdinalIgnoreCase));
@@ -642,6 +667,10 @@ namespace ReShade.Setup
 			{
 				currentInfo.targetApi = Api.OpenGL;
 			}
+			else if (isApiDDraw)
+			{
+				currentInfo.targetApi = Api.DDraw;
+			}
 
 			if (isHeadless)
 			{
@@ -660,12 +689,12 @@ namespace ReShade.Setup
 		}
 		void InstallStep_CheckExistingInstallation()
 		{
+			DownloadCompatibilityIni();
+
 			UpdateStatus("Checking installation status ...");
 
 			string basePath = Path.GetDirectoryName(currentInfo.targetPath);
 			string executableName = Path.GetFileName(currentInfo.targetPath);
-
-			DownloadCompatibilityIni();
 
 			if (currentInfo.targetApi != Api.Vulkan && compatibilityIni != null)
 			{
@@ -697,6 +726,10 @@ namespace ReShade.Setup
 					else if (api == "D3D12")
 					{
 						currentInfo.targetApi = Api.D3D12;
+					}
+					else if (api == "DDraw")
+					{
+						currentInfo.targetApi = Api.DDraw;
 					}
 					else if (api == "OpenGL")
 					{
@@ -748,6 +781,9 @@ namespace ReShade.Setup
 						break;
 					case Api.DXGI:
 						currentInfo.modulePath = "dxgi.dll";
+						break;
+					case Api.DDraw:
+						currentInfo.modulePath = "ddraw.dll";
 						break;
 					case Api.OpenGL:
 						currentInfo.modulePath = "opengl32.dll";
@@ -1078,8 +1114,6 @@ In that event here are some steps you can try to resolve this:
 					return;
 				}
 			}
-
-			DownloadCompatibilityIni();
 
 			// Add default configuration
 			var config = new IniFile(currentInfo.configPath);
@@ -1453,8 +1487,16 @@ In that event here are some steps you can try to resolve this:
 		{
 			if (!string.IsNullOrEmpty(currentInfo.presetPath) && File.Exists(currentInfo.presetPath))
 			{
+				string basePath = Path.GetDirectoryName(currentInfo.configPath);
+				string presetPath = currentInfo.presetPath;
+				if (presetPath.StartsWith(basePath))
+				{
+					// Try and make preset path relative
+					presetPath = "." + presetPath.Substring(basePath.Length);
+				}
+
 				var config = new IniFile(currentInfo.configPath);
-				config.SetValue("GENERAL", "PresetPath", currentInfo.presetPath);
+				config.SetValue("GENERAL", "PresetPath", presetPath);
 				config.SaveFile();
 
 				MakeWritable(currentInfo.presetPath);

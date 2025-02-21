@@ -19,12 +19,12 @@ extern "C" __declspec(dllexport) void AddonUninit(HMODULE addon_module, HMODULE 
 }
 ```
 
-Here is a very basic code example of an add-on that registers a callback that gets executed every time a new frame is presented to the screen:
+Here is a very basic code example of an add-on that registers a callback that gets executed every time ReShade has finished with a frame to be presented to the screen:
 
 ```cpp
 #include <reshade.hpp>
 
-static void on_present(reshade::api::command_queue *queue, reshade::api::swapchain *swapchain, const reshade::api::rect *source_rect, const reshade::api::rect *dest_rect, uint32_t dirty_rect_count, const reshade::api::rect *dirty_rects)
+static void on_reshade_present(reshade::api::effect_runtime *runtime)
 {
     // ...
 }
@@ -41,11 +41,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID)
         // This registers a callback for the 'present' event, which occurs every time a new frame is presented to the screen.
         // The function signature has to match the type defined by 'reshade::addon_event_traits<reshade::addon_event::present>::decl'.
         // For more details check the inline documentation for each event in 'reshade_events.hpp'.
-        reshade::register_event<reshade::addon_event::present>(&on_present);
+        reshade::register_event<reshade::addon_event::reshade_present>(&on_reshade_present);
         break;
     case DLL_PROCESS_DETACH:
         // Optionally unregister the event callback that was previously registered during process attachment again.
-        reshade::unregister_event<reshade::addon_event::present>(&on_present);
+        reshade::unregister_event<reshade::addon_event::reshade_present>(&on_reshade_present);
         // And finally unregister the add-on from ReShade (this will automatically unregister any events and overlays registered by this add-on too).
         reshade::unregister_addon(hinstDLL);
         break;
@@ -152,7 +152,7 @@ Buffers and textures are referenced via `reshade::api::resource` handles. Depth-
 ## Overlays
 
 It is also supported to add an overlay, which can e.g. be used to display debug information or interact with the user in-application.
-Overlays are created with the use of the docking branch of [Dear ImGui](https://github.com/ocornut/imgui/tree/v1.90-docking). Including `reshade.hpp` after [`imgui.h`](https://github.com/ocornut/imgui/blob/v1.90-docking/imgui.h) will automatically overwrite all Dear ImGui functions to use the instance created and managed by ReShade. This means all you have to do is include these two headers and use Dear ImGui as usual (without having to build its source code files):
+Overlays are created with the use of the docking branch of [Dear ImGui](https://github.com/ocornut/imgui/tree/v1.91.8-docking). Including `reshade.hpp` after [`imgui.h`](https://github.com/ocornut/imgui/blob/v1.91.8-docking/imgui.h) will automatically overwrite all Dear ImGui functions to use the instance created and managed by ReShade. This means all you have to do is include these two headers and use Dear ImGui as usual (without having to build its source code files):
 
 ```cpp
 #define IMGUI_DISABLE_INCLUDE_IMCONFIG_H

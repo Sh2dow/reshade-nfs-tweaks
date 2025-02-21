@@ -63,7 +63,7 @@ void reshade::d3d11::device_context_impl::barrier(uint32_t count, const api::res
 	{
 		if ((old_states[i] & api::resource_usage::shader_resource) != 0 && (new_states[i] & api::resource_usage::shader_resource) == 0 &&
 			// Ignore transitions to copy source or destination states, since those are not affected by the current SRV bindings
-			(new_states[i] & (api::resource_usage::depth_stencil | api::resource_usage::render_target)) != 0)
+			(new_states[i] & (api::resource_usage::depth_stencil | api::resource_usage::render_target | api::resource_usage::unordered_access)) != 0)
 			shader_resource_resources[transitions_away_from_shader_resource_usage++] = reinterpret_cast<ID3D11Resource *>(resources[i].handle);
 		if ((old_states[i] & api::resource_usage::unordered_access) != 0 && (new_states[i] & api::resource_usage::unordered_access) == 0)
 			unordered_access_resources[transitions_away_from_unordered_access_usage++] = reinterpret_cast<ID3D11Resource *>(resources[i].handle);
@@ -713,7 +713,7 @@ void reshade::d3d11::device_context_impl::copy_texture_to_buffer(api::resource, 
 {
 	assert(false);
 }
-void reshade::d3d11::device_context_impl::resolve_texture_region(api::resource src, uint32_t src_subresource, const api::subresource_box *src_box, api::resource dst, uint32_t dst_subresource, int32_t dst_x, int32_t dst_y, int32_t dst_z, api::format format)
+void reshade::d3d11::device_context_impl::resolve_texture_region(api::resource src, uint32_t src_subresource, const api::subresource_box *src_box, api::resource dst, uint32_t dst_subresource, uint32_t dst_x, uint32_t dst_y, uint32_t dst_z, api::format format)
 {
 	assert(src != 0 && dst != 0);
 	assert(src_box == nullptr && dst_x == 0 && dst_y == 0 && dst_z == 0);
@@ -779,6 +779,10 @@ void reshade::d3d11::device_context_impl::copy_acceleration_structure(api::resou
 	assert(false);
 }
 void reshade::d3d11::device_context_impl::build_acceleration_structure(api::acceleration_structure_type, api::acceleration_structure_build_flags, uint32_t, const api::acceleration_structure_build_input *, api::resource, uint64_t, api::resource_view, api::resource_view, api::acceleration_structure_build_mode)
+{
+	assert(false);
+}
+void reshade::d3d11::device_context_impl::query_acceleration_structures(uint32_t, const api::resource_view *, api::query_heap, api::query_type, uint32_t)
 {
 	assert(false);
 }
