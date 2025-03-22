@@ -5,8 +5,6 @@
 
 #pragma once
 
-#if RESHADE_FX
-
 #include "effect_module.hpp"
 #include "moving_average.hpp"
 
@@ -132,6 +130,14 @@ namespace reshade
 
 	struct technique
 	{
+		technique(const reshadefx::technique &init) :
+			name(init.name),
+			annotations(init.annotations),
+			permutations(1)
+		{
+			permutations.front().passes.assign(init.passes.begin(), init.passes.end());
+		}
+
 		std::string name;
 		size_t effect_index = std::numeric_limits<size_t>::max();
 
@@ -173,7 +179,7 @@ namespace reshade
 		bool enabled_in_screenshot = true;
 		int64_t time_left = 0;
 
-		struct pass : public reshadefx::pass
+		struct pass : reshadefx::pass
 		{
 			pass(const reshadefx::pass &init) : reshadefx::pass(init) {}
 
@@ -245,5 +251,3 @@ namespace reshade
 		api::query_heap query_heap = {};
 	};
 }
-
-#endif
