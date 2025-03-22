@@ -920,7 +920,9 @@ void reshade::runtime::draw_gui()
 	_effects_expanded_state &= 2;
 
 	if (!show_splash_window && !show_message_window && !show_statistics_window && !_show_overlay && _preview_texture == 0
-		&& !has_addon_event<addon_event::reshade_overlay>()
+#if RESHADE_ADDON
+	&& !has_addon_event<addon_event::reshade_overlay>()
+#endif
 		)
 	{
 		if (_input != nullptr)

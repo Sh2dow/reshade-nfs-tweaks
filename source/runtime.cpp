@@ -653,6 +653,9 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 	if (_should_save_screenshot)
 		save_screenshot(_screenshot_save_before ? "After" : std::string_view());
 
+	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+	*drawHUDAddr = drawFrontEnd;
+
 	_frame_count++;
 	const auto current_time = std::chrono::high_resolution_clock::now();
 	_last_frame_duration = current_time - _last_present_time; _last_present_time = current_time;
@@ -684,8 +687,19 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 
 		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
 		{
+			*drawHUDAddr = _screenshot_nfs_hud;
+
 			_screenshot_count++;
 			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame
+		}
+
+		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
+		{
+			// Toggle drawFrontEnd value
+			drawFrontEnd = !drawFrontEnd;
+
+			// Update the actual memory address as well
+			*(bool *)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
 		}
 
 		// Do not allow the following shortcuts while effects are being loaded or initialized (since they affect that state)
@@ -986,6 +1000,11 @@ void reshade::runtime::load_config()
 	config_get("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);
 	config_get("SCREENSHOT", "PostSaveCommandWorkingDirectory", _screenshot_post_save_command_working_directory);
 	config_get("SCREENSHOT", "PostSaveCommandHideWindow", _screenshot_post_save_command_hide_window);
+	config_get("SCREENSHOT", "ShowNfsFe", _screenshot_nfs_hud);
+
+#ifdef GAME_UC
+	config.get("NFS", "MotionBlur", bMotionBlur);
+#endif
 
 #if RESHADE_GUI
 	load_config_gui(config);
@@ -1051,6 +1070,7 @@ void reshade::runtime::save_config() const
 	config.set("SCREENSHOT", "PostSaveCommandArguments", _screenshot_post_save_command_arguments);
 	config.set("SCREENSHOT", "PostSaveCommandWorkingDirectory", _screenshot_post_save_command_working_directory);
 	config.set("SCREENSHOT", "PostSaveCommandHideWindow", _screenshot_post_save_command_hide_window);
+	config.set("SCREENSHOT", "ShowNfsFe", _screenshot_nfs_hud);
 
 #if RESHADE_GUI
 	save_config_gui(config);

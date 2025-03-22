@@ -400,7 +400,7 @@ namespace reshade
 		bool _screenshot_post_save_command_hide_window = false;
 		bool _screenshot_nfs_hud = false;
 
-		bool _screenshot_save_ui = false;
+		// bool _screenshot_save_ui = false;
 		bool _should_save_screenshot = false;
 		std::atomic<bool> _last_screenshot_save_successful = true;
 		bool _screenshot_directory_creation_successful = true;
