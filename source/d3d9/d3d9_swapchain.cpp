@@ -5,10 +5,13 @@
 
 #include "d3d9_device.hpp"
 #include "d3d9_swapchain.hpp"
+#include "d3d9_impl_type_convert.hpp"
 #include "dll_log.hpp" // Include late to get 'hr_to_string' helper function
 #include "addon_manager.hpp"
 #include "runtime_manager.hpp"
 #include <algorithm> // std::find
+
+using reshade::d3d9::to_handle;
 
 bool Direct3DSwapChain9::is_presenting_entire_surface(const RECT *source_rect, HWND hwnd)
 {
@@ -21,7 +24,7 @@ bool Direct3DSwapChain9::is_presenting_entire_surface(const RECT *source_rect, H
 	       source_rect->right == window_rect.right && source_rect->bottom == window_rect.bottom;
 }
 
-Direct3DSwapChain9::Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapChain9 *original) :
+Direct3DSwapChain9::Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapChain9   *original) :
 	swapchain_impl(device, original),
 	_extended_interface(0),
 	_device(device)
@@ -192,6 +195,17 @@ void Direct3DSwapChain9::on_init(bool resize)
 
 	D3DPRESENT_PARAMETERS pp = {};
 	_orig->GetPresentParameters(&pp);
+
+	// Communicate implicit back buffer render target view to add-ons
+	get_back_buffer();
+
+	reshade::invoke_addon_event<reshade::addon_event::init_resource_view>(
+		_device,
+		to_handle(static_cast<IDirect3DResource9 *>(_back_buffer.get())),
+		reshade::api::resource_usage::render_target,
+		reshade::api::resource_view_desc(pp.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? reshade::api::resource_view_type::texture_2d_multisample : reshade::api::resource_view_type::texture_2d, reshade::d3d9::convert_format(pp.BackBufferFormat), 0, 1, 0, 1),
+		to_handle(_back_buffer.get()));
+
 	reshade::invoke_addon_event<reshade::addon_event::set_fullscreen_state>(this, pp.Windowed == FALSE, nullptr);
 #else
 	UNREFERENCED_PARAMETER(resize);
@@ -210,6 +224,8 @@ void Direct3DSwapChain9::on_reset(bool resize)
 	reshade::reset_effect_runtime(this);
 
 #if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::destroy_resource_view>(_device, to_handle(_back_buffer.get()));
+
 	reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this, resize);
 #else
 	UNREFERENCED_PARAMETER(resize);
@@ -259,7 +275,7 @@ void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] co
 
 		// Only call into the effect runtime if the entire surface is presented, to avoid partial updates messing up effects and the GUI
 		if (is_presenting_entire_surface(source_rect, window_override))
-			reshade::present_effect_runtime(this, _device);
+			reshade::present_effect_runtime(this);
 
 		_hwnd = nullptr;
 
@@ -269,12 +285,12 @@ void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] co
 
 void Direct3DSwapChain9::handle_device_loss(HRESULT hr)
 {
-	// if (hr == D3DERR_DEVICELOST)
-	// {
-	// 	reshade::log::message(reshade::log::level::warning, "Device lost. Reinitializing implicit swap chain.");
-	// 	on_reset();
-	// 	_device->_implicit_swapchain = nullptr; // Reset the swap chain
-	// }
+	if (hr == D3DERR_DEVICELOST)
+	{
+		reshade::log::message(reshade::log::level::warning, "Device lost. Reinitializing implicit swap chain.");
+		on_reset(false);
+		_device->_implicit_swapchain = nullptr; // Reset the swap chain
+	}
 
 	_was_still_drawing_last_frame = (hr == D3DERR_WASSTILLDRAWING);
 

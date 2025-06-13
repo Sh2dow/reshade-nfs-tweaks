@@ -6,19 +6,199 @@
 
 #pragma once
 
-#include <imgui.h>
+#include "imgui_function_table_19191.hpp"
 
-using imgui_font_19180 = ImFont;
+using imgui_font_19180 = imgui_font_19191;
 
-using imgui_storage_19180 = ImGuiStorage;
+using imgui_storage_19180 = imgui_storage_19191;
 
-using imgui_list_clipper_19180 = ImGuiListClipper;
+using imgui_list_clipper_19180 = imgui_list_clipper_19191;
 
-using imgui_draw_list_19180 = ImDrawList;
+using imgui_draw_list_19180 = imgui_draw_list_19191;
 
-using imgui_io_19180 = ImGuiIO;
+struct imgui_io_19180
+{
+	ImGuiConfigFlags ConfigFlags;
+	ImGuiBackendFlags BackendFlags;
+	ImVec2 DisplaySize;
+	float DeltaTime;
+	float IniSavingRate;
+	const char *IniFilename;
+	const char *LogFilename;
+	void *UserData;
 
-using imgui_style_19180 = ImGuiStyle;
+	ImFontAtlas *Fonts;
+	float FontGlobalScale;
+	bool FontAllowUserScaling;
+	ImFont *FontDefault;
+	ImVec2 DisplayFramebufferScale;
+
+	bool ConfigNavSwapGamepadButtons;
+	bool ConfigNavMoveSetMousePos;
+	bool ConfigNavCaptureKeyboard;
+	bool ConfigNavEscapeClearFocusItem;
+	bool ConfigNavEscapeClearFocusWindow;
+	bool ConfigNavCursorVisibleAuto;
+	bool ConfigNavCursorVisibleAlways;
+
+	bool ConfigDockingNoSplit;
+	bool ConfigDockingWithShift;
+	bool ConfigDockingAlwaysTabBar;
+	bool ConfigDockingTransparentPayload;
+
+	bool ConfigViewportsNoAutoMerge;
+	bool ConfigViewportsNoTaskBarIcon;
+	bool ConfigViewportsNoDecoration;
+	bool ConfigViewportsNoDefaultParent;
+
+	bool MouseDrawCursor;
+	bool ConfigMacOSXBehaviors;
+	bool ConfigInputTrickleEventQueue;
+	bool ConfigInputTextCursorBlink;
+	bool ConfigInputTextEnterKeepActive;
+	bool ConfigDragClickToInputText;
+	bool ConfigWindowsResizeFromEdges;
+	bool ConfigWindowsMoveFromTitleBarOnly;
+	bool ConfigWindowsCopyContentsWithCtrlC;
+	bool ConfigScrollbarScrollByPage;
+	float ConfigMemoryCompactTimer;
+
+	float MouseDoubleClickTime;
+	float MouseDoubleClickMaxDist;
+	float MouseDragThreshold;
+	float KeyRepeatDelay;
+	float KeyRepeatRate;
+
+	bool ConfigErrorRecovery;
+	bool ConfigErrorRecoveryEnableAssert;
+	bool ConfigErrorRecoveryEnableDebugLog;
+	bool ConfigErrorRecoveryEnableTooltip;
+	bool ConfigDebugIsDebuggerPresent;
+	bool ConfigDebugHighlightIdConflicts;
+	bool ConfigDebugBeginReturnValueOnce;
+	bool ConfigDebugBeginReturnValueLoop;
+	bool ConfigDebugIgnoreFocusLoss;
+	bool ConfigDebugIniSettings;
+
+	const char *BackendPlatformName;
+	const char *BackendRendererName;
+	void *BackendPlatformUserData;
+	void *BackendRendererUserData;
+	void *BackendLanguageUserData;
+
+	bool WantCaptureMouse;
+	bool WantCaptureKeyboard;
+	bool WantTextInput;
+	bool WantSetMousePos;
+	bool WantSaveIniSettings;
+	bool NavActive;
+	bool NavVisible;
+	float Framerate;
+	int MetricsRenderVertices;
+	int MetricsRenderIndices;
+	int MetricsRenderWindows;
+	int MetricsActiveWindows;
+	ImVec2 MouseDelta;
+
+	ImGuiContext *Ctx;
+
+	ImVec2 MousePos;
+	bool MouseDown[5];
+	float MouseWheel;
+	float MouseWheelH;
+	ImGuiMouseSource MouseSource;
+	ImGuiID MouseHoveredViewport;
+	bool KeyCtrl;
+	bool KeyShift;
+	bool KeyAlt;
+	bool KeySuper;
+
+	ImGuiKeyChord KeyMods;
+	ImGuiKeyData KeysData[155];
+	bool WantCaptureMouseUnlessPopupClose;
+	ImVec2 MousePosPrev;
+	ImVec2 MouseClickedPos[5];
+	double MouseClickedTime[5];
+	bool MouseClicked[5];
+	bool MouseDoubleClicked[5];
+	ImU16 MouseClickedCount[5];
+	ImU16 MouseClickedLastCount[5];
+	bool MouseReleased[5];
+	double MouseReleasedTime[5];
+	bool MouseDownOwned[5];
+	bool MouseDownOwnedUnlessPopupClose[5];
+	bool MouseWheelRequestAxisSwap;
+	bool MouseCtrlLeftAsRightClick;
+	float MouseDownDuration[5];
+	float MouseDownDurationPrev[5];
+	ImVec2 MouseDragMaxDistanceAbs[5];
+	float MouseDragMaxDistanceSqr[5];
+	float PenPressure;
+	bool AppFocusLost;
+	bool AppAcceptingEvents;
+	ImWchar16 InputQueueSurrogate;
+	ImVector<ImWchar> InputQueueCharacters;
+};
+
+struct imgui_style_19180
+{
+	float Alpha;
+	float DisabledAlpha;
+	ImVec2 WindowPadding;
+	float WindowRounding;
+	float WindowBorderSize;
+	ImVec2 WindowMinSize;
+	ImVec2 WindowTitleAlign;
+	ImGuiDir WindowMenuButtonPosition;
+	float ChildRounding;
+	float ChildBorderSize;
+	float PopupRounding;
+	float PopupBorderSize;
+	ImVec2 FramePadding;
+	float FrameRounding;
+	float FrameBorderSize;
+	ImVec2 ItemSpacing;
+	ImVec2 ItemInnerSpacing;
+	ImVec2 CellPadding;
+	ImVec2 TouchExtraPadding;
+	float IndentSpacing;
+	float ColumnsMinSpacing;
+	float ScrollbarSize;
+	float ScrollbarRounding;
+	float GrabMinSize;
+	float GrabRounding;
+	float LogSliderDeadzone;
+	float TabRounding;
+	float TabBorderSize;
+	float TabMinWidthForCloseButton;
+	float TabBarBorderSize;
+	float TabBarOverlineSize;
+	float TableAngledHeadersAngle;
+	ImVec2 TableAngledHeadersTextAlign;
+	ImGuiDir ColorButtonPosition;
+	ImVec2 ButtonTextAlign;
+	ImVec2 SelectableTextAlign;
+	float SeparatorTextBorderSize;
+	ImVec2 SeparatorTextAlign;
+	ImVec2 SeparatorTextPadding;
+	ImVec2 DisplayWindowPadding;
+	ImVec2 DisplaySafeAreaPadding;
+	float DockingSeparatorSize;
+	float MouseCursorScale;
+	bool AntiAliasedLines;
+	bool AntiAliasedLinesUseTex;
+	bool AntiAliasedFill;
+	float CurveTessellationTol;
+	float CircleTessellationMaxError;
+
+	ImVec4 Colors[58];
+
+	float HoverStationaryDelay;
+	float HoverDelayShort;
+	float HoverDelayNormal;
+	ImGuiHoveredFlags HoverFlagsForTooltipMouse;
+	ImGuiHoveredFlags HoverFlagsForTooltipNav;
+};
 
 struct imgui_function_table_19180
 {

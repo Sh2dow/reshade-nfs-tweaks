@@ -163,9 +163,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 			const bool is_dxgi = _wcsicmp(module_name.c_str(), L"dxgi") == 0;
 			const bool is_opengl = _wcsicmp(module_name.c_str(), L"opengl32") == 0;
 			const bool is_dinput = _wcsnicmp(module_name.c_str(), L"dinput", 6) == 0;
+			const bool is_asi = g_reshade_dll_path.extension() == L".asi";
 
 			// UWP apps do not have write access to the application directory, so never default the base path to it for them
-			const bool default_base_to_target_executable_path = !is_d3d && !is_dxgi && !is_opengl && !is_dinput && !is_uwp_app();
+			const bool default_base_to_target_executable_path = !is_d3d && !is_dxgi && !is_opengl && !is_dinput && !is_asi && !is_uwp_app();
 
 			g_reshade_base_path = get_base_path(default_base_to_target_executable_path);
 
@@ -356,11 +357,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 
 					// Do not register Vulkan hooks, since Vulkan layering mechanism is used instead
 
-#ifndef _WIN64
-					reshade::hooks::register_module(L"vrclient.dll");
-#else
-					reshade::hooks::register_module(L"vrclient_x64.dll");
-#endif
+					reshade::hooks::register_module(L"openvr_api.dll");
 				}
 			}
 
@@ -403,7 +400,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 #endif
 #endif
 #endif
-
 			reshade::log::message(reshade::log::level::info, "Initialized.");
 			break;
 		}

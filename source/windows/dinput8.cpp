@@ -11,41 +11,18 @@
 #include "hook_manager.hpp"
 #include "input.hpp"
 
-#define IDirectInputDevice8_SetCooperativeLevel_Impl(vtable_index, encoding) \
-	HRESULT STDMETHODCALLTYPE IDirectInputDevice8##encoding##_SetCooperativeLevel(IDirectInputDevice8##encoding *pDevice, HWND hwnd, DWORD dwFlags) \
-	{ \
-		reshade::log::message(reshade::log::level::info, "Redirecting IDirectInputDevice8::SetCooperativeLevel(this = %p, hwnd = %p, dwFlags = %#x) ...", pDevice, hwnd, dwFlags); \
-		\
-		if (dwFlags & DISCL_EXCLUSIVE) \
-		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			if (LOBYTE(info.dwDevType) == DI8DEVTYPE_MOUSE || \
-				LOBYTE(info.dwDevType) == DI8DEVTYPE_KEYBOARD) \
-			{ \
-				/* Need to remove exclusive flag, otherwise DirectInput will block input window messages and input.cpp will not receive input anymore */ \
-				dwFlags = (dwFlags & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE; \
-				\
-				reshade::log::message(reshade::log::level::info, "> Replacing flags with %#x.", dwFlags); \
-			} \
-		} \
-		\
-		return reshade::hooks::call(IDirectInputDevice8##encoding##_SetCooperativeLevel, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, hwnd, dwFlags); \
-	}
-
-IDirectInputDevice8_SetCooperativeLevel_Impl(13, A)
-IDirectInputDevice8_SetCooperativeLevel_Impl(13, W)
-
-// It is technically possible to associate these hooks back to a device (cooperative level), but it may not be the same window as ReShade renders on
 #define IDirectInputDevice8_GetDeviceState_Impl(vtable_index, encoding) \
 	HRESULT STDMETHODCALLTYPE IDirectInputDevice8##encoding##_GetDeviceState(IDirectInputDevice8##encoding *pDevice, DWORD cbData, LPVOID lpvData) \
 	{ \
-		const HRESULT hr = reshade::hooks::call(IDirectInputDevice8##encoding##_GetDeviceState, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, cbData, lpvData); \
+		static const auto trampoline = reshade::hooks::call(IDirectInputDevice8##encoding##_GetDeviceState, reshade::hooks::vtable_from_instance(pDevice) + vtable_index); \
+		\
+		const HRESULT hr = trampoline(pDevice, cbData, lpvData); \
 		if (SUCCEEDED(hr)) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			switch (LOBYTE(info.dwDevType)) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			switch (LOBYTE(caps.dwDevType)) \
 			{ \
 			case DI8DEVTYPE_MOUSE: \
 				if (reshade::input::is_blocking_any_mouse_input() && (cbData == sizeof(DIMOUSESTATE) || cbData == sizeof(DIMOUSESTATE2))) \
@@ -64,15 +41,21 @@ IDirectInputDevice8_SetCooperativeLevel_Impl(13, W)
 IDirectInputDevice8_GetDeviceState_Impl(9, A)
 IDirectInputDevice8_GetDeviceState_Impl(9, W)
 
+// This may be called a lot (e.g. in Dungeons & Dragons Online), so should have as low overhead as possible
 #define IDirectInputDevice8_GetDeviceData_Impl(vtable_index, encoding) \
 	HRESULT STDMETHODCALLTYPE IDirectInputDevice8##encoding##_GetDeviceData(IDirectInputDevice8##encoding *pDevice, DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD dwFlags) \
 	{ \
-		HRESULT hr = reshade::hooks::call(IDirectInputDevice8##encoding##_GetDeviceData, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, cbObjectData, rgdod, pdwInOut, dwFlags); \
-		if (SUCCEEDED(hr) && (dwFlags & DIGDD_PEEK) == 0) \
+		static const auto trampoline = reshade::hooks::call(IDirectInputDevice8##encoding##_GetDeviceData, reshade::hooks::vtable_from_instance(pDevice) + vtable_index); \
+		\
+		HRESULT hr = trampoline(pDevice, cbObjectData, rgdod, pdwInOut, dwFlags); \
+		if (SUCCEEDED(hr) && \
+			(dwFlags & DIGDD_PEEK) == 0 && \
+			(rgdod != nullptr && *pdwInOut != 0)) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			switch (LOBYTE(info.dwDevType)) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			switch (LOBYTE(caps.dwDevType)) \
 			{ \
 			case DI8DEVTYPE_MOUSE: \
 				if (reshade::input::is_blocking_any_mouse_input()) \
@@ -109,7 +92,6 @@ IDirectInputDevice8_GetDeviceData_Impl(10, W)
 		{ \
 			reshade::hooks::install("IDirectInputDevice8" #encoding "::GetDeviceState", reshade::hooks::vtable_from_instance(*lplpDirectInputDevice), 9, reinterpret_cast<reshade::hook::address>(&IDirectInputDevice8##encoding##_GetDeviceState)); \
 			reshade::hooks::install("IDirectInputDevice8" #encoding "::GetDeviceData", reshade::hooks::vtable_from_instance(*lplpDirectInputDevice), 10, reinterpret_cast<reshade::hook::address>(&IDirectInputDevice8##encoding##_GetDeviceData)); \
-			reshade::hooks::install("IDirectInputDevice8" #encoding "::SetCooperativeLevel", reshade::hooks::vtable_from_instance(*lplpDirectInputDevice), 13, reinterpret_cast<reshade::hook::address>(&IDirectInputDevice8##encoding##_SetCooperativeLevel)); \
 		} \
 		else \
 		{ \
