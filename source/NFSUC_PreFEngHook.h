@@ -9,6 +9,7 @@
 #ifndef NFS_MULTITHREAD
 #define NFS_MULTITHREAD
 #endif
+#define FEMANAGER_SUB 0x0091CAE0
 #define FEMANAGER_RENDER_HOOKADDR1 0x007AE5D8
 #define NFSUC_EXIT1 0x007AE5DE
 #define NFSUC_EXIT2 0x07AE635
@@ -138,6 +139,7 @@
 
 // TODO - find FEngine package command control
 #define FENG_MINSTANCE_ADDR 0x00D992BC
+#define VTABLE_RENDER_INDEX 15
 //#define FENG_QUEUEPACKAGEPOP_ADDR 0x0059F160
 //#define FENG_QUEUEPACKAGEPUSH_ADDR 0x005AC340
 //#define FENG_QUEUEPACKAGESWITCH_ADDR FENG_QUEUEPACKAGEPUSH_ADDR
@@ -160,7 +162,13 @@
 #define GMW2GAME_AWARDCASH_ADDR 0x005FED00
 #define GMW2GAME_OBJ_ADDR 0x00D9B940
 
+// Typedef for the original frontend render function
+typedef void(__thiscall* FEManagerRenderFn)(void* ThisFE);
 
+// Extern declaration for the global function pointer
+extern FEManagerRenderFn FEManager_Render_Original;
+void __stdcall FEManager_Render_Hook(void* ThisFE);
+void ReShade_GameHookEntry();
 void ReShade_EntryPoint();
 void __stdcall MainService_Hook();
 void MotionBlur_EntryPoint();

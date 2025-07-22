@@ -4,6 +4,10 @@
  */
 
 #include "d3d9_device.hpp"
+#include "runtime.hpp"
+
+#include <nfsincludes/injector/injector.hpp>
+
 #include "d3d9_resource.hpp"
 #include "d3d9_swapchain.hpp"
 #include "d3d9on12_device.hpp"
@@ -1288,6 +1292,8 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice9::GetDepthStencilSurface(IDirect3DSurfa
 }
 HRESULT STDMETHODCALLTYPE Direct3DDevice9::BeginScene()
 {
+	//g_pd3dDevice = _runtime
+
 #if RESHADE_ADDON
 	// Force next draw call to trigger 'bind_pipeline_states' event with primitive topology
 	_current_prim_type = static_cast<D3DPRIMITIVETYPE>(0);
@@ -2828,11 +2834,16 @@ void Direct3DDevice9::modify_pool_for_d3d9ex(DWORD &usage, D3DPOOL &pool) const
 }
 #endif
 
+
+// NFS Hooks
 #if defined(GAME_UC) || defined(GAME_PS)
 #ifdef GAME_UC
 bool bGlobalMotionBlur = false;
 int NFSUC_MOTIONBLUR_ExitPointTrue = NFSUC_MOTIONBLUR_EXIT_TRUE;
 int NFSUC_MOTIONBLUR_ExitPointFalse = NFSUC_MOTIONBLUR_EXIT_FALSE;
+
+static uint64_t g_fe_frame_counter = 0;
+
 void __declspec(naked) MotionBlur_EntryPoint()
 {
 	if (!bGlobalMotionBlur)
@@ -2845,53 +2856,27 @@ void __declspec(naked) MotionBlur_EntryPoint()
 	}
 }
 #endif
-
-// void __stdcall ReShade_Hook()
-// {
-// 	// Access the Direct3DDevice9 from the game's address
-// 	Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
-//
-// 	#ifdef GAME_UC
-// 		bGlobalMotionBlur = g_pd3dDevice->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
-// 	#endif
-// 		g_pd3dDevice->_implicit_swapchain->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
-// }
-
 void __stdcall ReShade_Hook()
 {
-	// Access the Direct3DDevice9 pointer from the game's memory
-	Direct3DDevice9 *g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
+	reshade::log::message(reshade::log::level::debug, "FEManager_Render_Hook_Impl(): Called");
 
-	if (g_pd3dDevice == nullptr)
+	if (reshade::runtime* runtime = reshade::g_runtime_nfs)
 	{
-		// reshade::log::message(reshade::log::level::error, "Failed to retrieve Direct3DDevice9 instance.");
-		return;
-	}
-
-	// Access the implicit swap chain
-	Direct3DSwapChain9 *swapchain = g_pd3dDevice->_implicit_swapchain;
-	if (swapchain == nullptr)
-	{
-		// reshade::log::message(reshade::log::level::error, "Failed to retrieve implicit swap chain.");
-		return;
-	}
-
 #ifdef GAME_UC
-	// Toggle motion blur if applicable
-	bGlobalMotionBlur = swapchain->bMotionBlur; // Assuming `bMotionBlur` exists
-	// bGlobalMotionBlur = true; // Example: Enable motion blur
-	// reshade::log::message(reshade::log::level::debug, "Motion blur toggled in GAME_UC.");
+		bGlobalMotionBlur = runtime->bMotionBlur;
 #endif
-
-	// reshade::log::message(reshade::log::level::debug, "Implicit swap chain retrieved successfully.");
-
-	// Call the NFS-specific present method
-	swapchain->on_nfs_present(nullptr, nullptr, nullptr, nullptr);
-
-	// reshade::log::message(reshade::log::level::info, "ReShade effects rendered before FE.");
+		if (!runtime->get_is_in_present_call()) // 💡 prevent re-entrant render call
+		{
+			g_force_fe_present_pass = true;
+			runtime->on_nfs_present(true, ++g_fe_frame_counter);
+			g_force_fe_present_pass = false;
+		}
+		else
+		{
+			reshade::log::message(reshade::log::level::debug, "⏩ Skipped on_nfs_present(): already in present call");
+		}
+	}
 }
-
-
 
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
@@ -2917,7 +2902,7 @@ void __stdcall FEManager_Render_Hook()
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
 	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 
-	g_pd3dDevice->_implicit_swapchain->on_nfs_present(nullptr, nullptr, nullptr, nullptr); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
 	FEManager_Render(TheThis);
 }
 #endif

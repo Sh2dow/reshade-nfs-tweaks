@@ -14,6 +14,8 @@
 #include <atomic>
 #include <shared_mutex>
 
+#include "dll_log.hpp"
+
 #ifdef GAME_MW
 #include "NFSMW_PreFEngHook.h"
 #endif
@@ -61,8 +63,17 @@ namespace reshade
 
 		bool on_init();
 		void on_reset();
-		void on_nfs_present();
+		void set_uniform_value_resource(api::effect_uniform_variable handle, const api::resource_view* values,
+		                                size_t count,
+		                                size_t array_index);
+		reshade::api::effect_uniform_variable find_uniform_variable_by_name(const char* name);
+		reshade::api::effect_uniform_variable find_uniform_variable(const std::string& name);
+		bool ensure_render_targets();
+		bool set_sampler_uniform(const char* name, reshade::api::resource_view view);
+		void call_draw_gui() { draw_gui(); }
 		void on_present();
+		void on_present_clean();
+		void on_nfs_present(bool force_present, uint64_t frame);
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
 
@@ -198,8 +209,42 @@ namespace reshade
 
 		void reload_effect_next_frame(const char *effect_name) final;
 
+
+// ToDo: Remove later - unused
+		// size_t get_technique_count() const { return _techniques.size(); }
+		void wrapped_update_effects() { update_effects(); }
+
+		bool get_is_in_present_call() const { return _is_in_present_call; }
+		bool get_is_initialized() const { return _is_initialized; }
+		api::command_queue* get_graphics_queue() const { return _graphics_queue; }
+		uint64_t get_frame_count() const { return _frame_count; }
+		const std::vector<effect> &get_effects() const { return _effects; }
+		bool get_effects_rendered_this_frame() const { return _effects_rendered_this_frame; }
+		void set_effects_rendered_this_frame(bool value) { _effects_rendered_this_frame = value; }
+		const std::vector<technique> &get_techniques() const { return _techniques; }
+		bool update_effects_passed;
+		static bool logged;
+		static bool reshade_initialized_once;
+
+		api::resource _scene_texture = {};
+
+		// Input backbuffer copy
+		api::resource _scene_texture_input = {};
+		api::resource_view _scene_srv = {}; // NEW — must be added
+
+		// Offscreen target for rendering
+		api::resource _scene_texture_output = {};
+		api::resource_view _scene_rtv = {};
+
+		// Optional depth (if you plan to expand)
+		api::resource_view _scene_depth_texture = {};
+
+// unused
+
+
 #ifdef GAME_UC
 		bool bMotionBlur;
+		bool g_force_fe_present_pass;
 #endif
 
 	private:
@@ -578,4 +623,7 @@ namespace reshade
 	template <> void runtime::set_uniform_value<float>(uniform &variable, const float *values, size_t count, size_t array_index);
 	template <> void runtime::set_uniform_value<int32_t>(uniform &variable, const int32_t *values, size_t count, size_t array_index);
 	template <> void runtime::set_uniform_value<uint32_t>(uniform &variable, const uint32_t *values, size_t count, size_t array_index);
+
+	inline runtime *g_runtime_nfs = nullptr;
+	inline bool g_force_custom_fe_render_pass;
 }

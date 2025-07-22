@@ -24,6 +24,8 @@
 #include <cstdlib> // std::lldiv, std::strtol
 #include <cstring> // std::memcmp, std::memcpy
 #include <algorithm> // std::any_of, std::count_if, std::find, std::find_if, std::max, std::min, std::replace, std::rotate, std::search, std::swap, std::transform
+
+#include "d3d9/d3d9_device.hpp"
 #ifdef GAME_MW
 #include "NFSMW_PreFEngHook.h"
 #endif
@@ -41,6 +43,7 @@
 #endif
 #ifdef GAME_UC
 #include "NFSUC_PreFEngHook.h"
+
 #endif
 
 extern bool resolve_path(std::filesystem::path &path, std::error_code &ec);

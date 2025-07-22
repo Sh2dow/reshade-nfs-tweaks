@@ -1737,8 +1737,15 @@ namespace reshade
 		/// </remarks>
 		reshade_overlay_technique,
 
+
 #if RESHADE_ADDON
-		max = 98 // Last value used internally by ReShade to determine number of events in this enum
+		/// <summary>
+		/// Custom ReShade render pass before frontend
+		/// </summary>
+		// nfs_pre_fe_present = 98,
+
+		max = 98, // Last value used internally by ReShade to determine number of events in this enum
+
 #endif
 	};
 
@@ -1882,4 +1889,11 @@ namespace reshade
 
 	RESHADE_DEFINE_ADDON_EVENT_TRAITS(addon_event::reshade_overlay_uniform_variable, bool, api::effect_runtime *runtime, api::effect_uniform_variable variable);
 	RESHADE_DEFINE_ADDON_EVENT_TRAITS(addon_event::reshade_overlay_technique, bool, api::effect_runtime *runtime, api::effect_technique technique);
+
+	// template <>
+	// 	struct addon_event_traits<addon_event::nfs_pre_fe_present>
+	// {
+	// 	using type = void;
+	// 	using decl = void(*)(reshade::api::swapchain *);
+	// };
 }

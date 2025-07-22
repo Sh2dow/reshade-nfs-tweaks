@@ -846,6 +846,19 @@ static void on_execute_secondary(command_list *cmd_list, command_list *secondary
 	}
 }
 
+// static auto on_nfs_pre_fe_present = [](reshade::api::swapchain *swapchain)
+// {
+// 	if (swapchain == nullptr)
+// 		return;
+//
+// 	auto *runtime = static_cast<reshade::d3d9::swapchain_impl *>(swapchain);
+// 	if (runtime != nullptr)
+// 	{
+// 		runtime->on_nfs_present(); // ← Main effect rendering
+// 	}
+// };
+
+
 static void on_present(command_queue *, swapchain *swapchain, const rect *, const rect *, uint32_t, const rect *)
 {
 	device *const device = swapchain->get_device();
@@ -1443,6 +1456,9 @@ void register_addon_depth()
 	reshade::register_event<reshade::addon_event::reshade_finish_effects>(on_finish_render_effects);
 	// Need to set texture binding again after reloading
 	reshade::register_event<reshade::addon_event::reshade_reloaded_effects>(update_effect_runtime);
+
+	// reshade::register_event<reshade::addon_event::nfs_pre_fe_present>(on_nfs_pre_fe_present);
+
 }
 void unregister_addon_depth()
 {
@@ -1476,6 +1492,8 @@ void unregister_addon_depth()
 	reshade::unregister_event<reshade::addon_event::reshade_begin_effects>(on_begin_render_effects);
 	reshade::unregister_event<reshade::addon_event::reshade_finish_effects>(on_finish_render_effects);
 	reshade::unregister_event<reshade::addon_event::reshade_reloaded_effects>(update_effect_runtime);
+
+	// reshade::unregister_event<reshade::addon_event::nfs_pre_fe_present>(on_nfs_pre_fe_present);
 }
 
 #ifndef BUILTIN_ADDON
