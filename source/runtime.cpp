@@ -429,7 +429,7 @@ bool reshade::runtime::on_init()
 		}
 	}
 
-	// 🔧 Create off-screen scene render target (for early scene-only effects)
+	// 🔧 Create off-screen scene render targets (for early scene-only effects)
 	reshade::log::message(log::level::warning,
 		"🆕 on_init(): creating scene targets (frame = %u)", _frame_count);
 
@@ -474,7 +474,7 @@ bool reshade::runtime::on_init()
 			log::message(log::level::info, "on_init(): ✅ Success creating _scene_srv: handle=%p", _scene_srv.handle);
 		}
 
-		// 3. Create output texture and RTV
+		// 3. Create output texture
 		if (_scene_texture_output.handle == 0)
 		{
 			if (!_device->create_resource(output_desc, nullptr, reshade::api::resource_usage::render_target, &_scene_texture_output))
@@ -489,23 +489,6 @@ bool reshade::runtime::on_init()
 				actual_desc.texture.height,
 				static_cast<uint32_t>(actual_desc.texture.format),
 				static_cast<uint32_t>(actual_desc.usage));
-
-			const api::format rtv_format = actual_desc.texture.format;
-			log::message(log::level::debug, "on_init(): ✅ Using RTV format = 0x%X (from _scene_texture_output)", static_cast<uint32_t>(rtv_format));
-
-			const api::resource_view_desc rtv_desc(rtv_format);
-			if (!_device->create_resource_view(
-				_scene_texture_output,
-				api::resource_usage::render_target,
-				rtv_desc,
-				&_scene_rtv))
-			{
-				log::message(log::level::error, "on_init(): ❌ Failed creating _scene_rtv");
-				goto exit_failure;
-			}
-
-			log::message(log::level::info, "on_init(): ✅ Success creating _scene_rtv: format=0x%X, handle=%p",
-				static_cast<uint32_t>(rtv_format), _scene_rtv.handle);
 		}
 
 		// 4. Create dedicated effect render target (_scene_texture)
@@ -525,19 +508,20 @@ bool reshade::runtime::on_init()
 			}
 		}
 
-		if (_scene_rtv.handle == 0)
-		{
-			const api::resource_desc tex_desc = _device->get_resource_desc(_scene_texture);
-			api::resource_view_desc rtv_desc(tex_desc.texture.format);
+		// 5. ✅ Always recreate _scene_rtv
+		if (_scene_rtv.handle != 0)
+			_device->destroy_resource_view(_scene_rtv);
+		_scene_rtv = {};
 
-			if (_device->create_resource_view(_scene_texture, api::resource_usage::render_target, rtv_desc, &_scene_rtv))
-				log::message(log::level::debug, "on_init(): ✅ Created _scene_rtv = %p", (void *)_scene_rtv.handle);
-			else
-			{
-				log::message(log::level::error, "on_init(): ❌ Failed to create _scene_rtv for _scene_texture");
-				goto exit_failure;
-			}
+		if (!_device->create_resource_view(_scene_texture_output, api::resource_usage::render_target,
+			api::resource_view_desc(_back_buffer_format), &_scene_rtv))
+		{
+			log::message(log::level::error, "❌ Failed to create _scene_rtv in on_init()");
+			goto exit_failure;
 		}
+
+		log::message(log::level::info, "on_init(): ✅ Success creating _scene_rtv: format=0x%X, handle=%p",
+			static_cast<uint32_t>(_back_buffer_format), _scene_rtv.handle);
 	}
 
 
@@ -706,266 +690,72 @@ void reshade::runtime::on_reset()
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
 
-void reshade::runtime::set_uniform_value_resource(api::effect_uniform_variable handle, const api::resource_view* values,
-                                                  size_t count, size_t array_index)
-{
-	if (handle.handle == 0 || values == nullptr || count == 0)
-		return;
-
-#if RESHADE_ADDON
-	const bool was_is_in_api_call = _is_in_api_call;
-	_is_in_api_call = true;
-#endif
-
-	const auto variable = reinterpret_cast<uniform*>(handle.handle);
-	if (variable == nullptr)
-		return;
-
-	// Treat SRV handles as raw uint32 values and write them through the uint overload
-	set_uniform_value_uint(handle, reinterpret_cast<const uint32_t*>(values), count, array_index);
-
-#if RESHADE_ADDON
-	_is_in_api_call = was_is_in_api_call;
-#endif
-}
-
-reshade::api::effect_uniform_variable reshade::runtime::find_uniform_variable_by_name(const char *name)
-{
-	api::effect_uniform_variable result = {};
-
-	enumerate_uniform_variables(nullptr,
-	[](effect_runtime* runtime, api::effect_uniform_variable var, void* user_data)
-	{
-		auto self = static_cast<reshade::runtime *>(runtime);
-		auto srv = static_cast<reshade::api::resource_view *>(user_data);
-
-		char name[256] = {};
-		size_t len = sizeof(name);
-		self->get_uniform_variable_name(var, name, &len);
-
-		// Try to bind _scene_srv to any uniform that looks like a texture
-		// This includes SceneColor, BackBufferTex, SourceTex, etc.
-		self->set_uniform_value_resource(var, srv, 1, 0);
-		reshade::log::message(log::level::debug, "🔗 Bound _scene_srv to: %s", name);
-	}, &_scene_srv);
-
-	return result;
-}
-
-reshade::api::effect_uniform_variable reshade::runtime::find_uniform_variable(const std::string& target_name)
-{
-	struct find_data
-	{
-		const char* name;
-		api::effect_uniform_variable result = {0};
-	};
-
-	find_data data{target_name.c_str()};
-
-	enumerate_uniform_variables(
-		nullptr, [](effect_runtime* runtime, api::effect_uniform_variable variable, void* user_data)
-		{
-			auto* self = static_cast<reshade::runtime*>(runtime);
-			auto* data = static_cast<find_data*>(user_data);
-
-			char temp_name[256] = {};
-			size_t temp_name_len = sizeof(temp_name);
-
-			self->get_uniform_variable_name(variable, temp_name, &temp_name_len); // first call
-
-			if (std::strcmp(temp_name, data->name) == 0)
-			{
-				data->result = variable;
-			}
-		}, &data);
-
-	return data.result;
-}
-
-bool reshade::runtime::ensure_render_targets()
-{
-	const uint32_t new_width = _width;
-	const uint32_t new_height = _height;
-
-	if (new_width == 0 || new_height == 0)
-	{
-		log::message(log::level::warning, "⛔ ensure_render_targets(): invalid runtime dimensions (%ux%u)", new_width, new_height);
-		return false;
-	}
-
-	bool reset_required = false;
-
-	if (_scene_texture.handle != 0)
-	{
-		const auto desc = _device->get_resource_desc(_scene_texture);
-		if (desc.texture.width != new_width || desc.texture.height != new_height)
-		{
-			log::message(log::level::info, "📐 Scene texture resize needed (%ux%u → %ux%u)", desc.texture.width, desc.texture.height, new_width, new_height);
-			reset_required = true;
-		}
-	}
-	else
-	{
-		log::message(log::level::info, "➕ Scene texture is missing — triggering reset");
-		reset_required = true;
-	}
-
-	if (reset_required)
-	{
-		log::message(log::level::info, "🔄 ensure_render_targets(): calling on_reset()");
-		on_reset();
-		return false; // signal to skip frame
-	}
-
-	return true;
-}
-
 const float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 static uint64_t g_fe_frame_counter = 0;
 
-void reshade::runtime::on_nfs_present(bool force_present, uint64_t fe_frame_index)
+void reshade::runtime::on_nfs_present()
 {
-	// Early out for common cases
 	if (!_is_initialized || !_effects_enabled || _techniques.empty() || is_loading())
-		return;
-
-	api::command_list *cmd_list = _graphics_queue->get_immediate_command_list();
-	if (cmd_list == nullptr)
 		return;
 
 #if RESHADE_ADDON
 	_is_in_present_call = true;
 #endif
 
-	if (_frame_count > 0 && _app_state.handle == 0 && cmd_list != nullptr)
+	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
+
+	_current_time = std::chrono::system_clock::now();
+
+	// Save app state
+	if (_frame_count > 0 && _app_state.handle == 0)
 	{
-		if (_device != nullptr && _device->get_api() == reshade::api::device_api::d3d9)
+		if (_device->get_api() == api::device_api::d3d9)
 		{
-			reshade::log::message(log::level::debug, "💾 Capturing app state (safe)");
+			reshade::log::message(log::level::debug,"💾 Capturing app state");
 			capture_state(cmd_list, _app_state);
 		}
 	}
 
-	// Must come AFTER capture_state()
-	if (!ensure_render_targets())
-	{
-		log::message(log::level::warning, "❌ Aborted on_nfs_present(): runtime not ready after on_reset()");
-		return;
-	}
+	// 🔁 Copy backbuffer → _scene_texture_input
+	const uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
+	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
 
-	update_effects();
-	_current_time = std::chrono::system_clock::now();
+	cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::copy_source);
+	cmd_list->barrier(_scene_texture_input, api::resource_usage::undefined, api::resource_usage::copy_dest);
+	cmd_list->copy_resource(_scene_texture_input, back_buffer_resource);
+	cmd_list->barrier(back_buffer_resource, api::resource_usage::copy_source, api::resource_usage::present);
+	cmd_list->barrier(_scene_texture_input, api::resource_usage::copy_dest, api::resource_usage::shader_resource);
 
-	// Handle screenshots before rendering
-	if (_should_save_screenshot && _screenshot_save_before && !_effects_rendered_this_frame)
-		save_screenshot("Before");
+	// 🟢 Render effects → _scene_texture_output
+	cmd_list->barrier(_scene_texture_output, api::resource_usage::shader_resource, api::resource_usage::render_target);
+	cmd_list->bind_render_targets_and_depth_stencil(1, &_scene_rtv);
+	render_effects(cmd_list, _scene_rtv, _scene_rtv);
+	cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::shader_resource);
 
-	// Create _scene_texture if needed
-	if (_scene_texture.handle == 0)
-	{
-		api::resource_desc desc = {};
-		desc.type = api::resource_type::texture_2d;
-		desc.texture.width = _width;
-		desc.texture.height = _height;
-		desc.texture.depth_or_layers = 1;
-		desc.texture.levels = 1;
-		desc.texture.format = _back_buffer_format;
-		desc.texture.samples = 1;
-		desc.heap = api::memory_heap::gpu_only;
-		desc.usage = api::resource_usage::render_target | api::resource_usage::copy_source;
+	reshade::log::message(log::level::info,
+	"✅ Finished pre-FE render: _scene_texture_output = %016" PRIx64,
+	_scene_texture_output.handle);
 
-		if (!_device->create_resource(desc, nullptr, api::resource_usage::render_target, &_scene_texture))
-		{
-			log::message(log::level::error, "on_nfs_present(): ❌ Failed to create _scene_texture");
-			return;
-		}
-	}
-
-	// Create _scene_rtv if needed
-	if (_scene_rtv.handle == 0)
-	{
-		api::resource_view_desc rtv_desc(_device->get_resource_desc(_scene_texture).texture.format);
-		if (!_device->create_resource_view(_scene_texture, api::resource_usage::render_target, rtv_desc, &_scene_rtv))
-		{
-			log::message(log::level::error, "on_nfs_present(): ❌ Failed to create _scene_rtv");
-			return;
-		}
-	}
-
-	// Step 1: Copy backbuffer to _scene_texture_input for sampling
-	// Get backbuffer
-	api::resource game_backbuffer = _swapchain->get_current_back_buffer();
-
-	// Copy backbuffer → input (for sampling by shaders)
-	cmd_list->barrier(game_backbuffer, api::resource_usage::present, api::resource_usage::copy_source);
-	cmd_list->barrier(_scene_texture_input, api::resource_usage::copy_dest, api::resource_usage::copy_dest);
-	cmd_list->copy_resource(_scene_texture_input, game_backbuffer);
-
-	// Create staging resource (if not reused, can be cached)
-	api::resource_desc desc = _device->get_resource_desc(_scene_texture_input);
-	api::resource staging;
-	if (_device->create_resource(
-		api::resource_desc(desc.texture.width, desc.texture.height, 1, 1, desc.texture.format, 1,
-			reshade::api::memory_heap::gpu_to_cpu, reshade::api::resource_usage::copy_dest),
-		nullptr, reshade::api::resource_usage::copy_dest, &staging))
-	{
-		// Copy input to staging texture
-		cmd_list->barrier(_scene_texture_input, api::resource_usage::shader_resource, api::resource_usage::copy_source);
-		cmd_list->copy_resource(staging, _scene_texture_input);
-		cmd_list->barrier(_scene_texture_input, api::resource_usage::copy_source, api::resource_usage::shader_resource);
-
-		// Ensure copy completes before reading
-		_graphics_queue->wait_idle();
-
-		api::subresource_data mapped_data = {};
-		if (_device->map_texture_region(staging, 0, nullptr, reshade::api::map_access::read_only, &mapped_data))
-		{
-			const uint32_t first_pixel = *reinterpret_cast<const uint32_t *>(mapped_data.data);
-			log::message(log::level::info, "💡 First pixel = 0x%08X", first_pixel);
-			_device->unmap_texture_region(staging, 0);
-		}
-		else
-		{
-			log::message(log::level::error, "❌ Failed to map staging texture!");
-		}
-
-		_device->destroy_resource(staging);
-	}
-	else
-	{
-		log::message(log::level::error, "❌ Failed to create staging texture!");
-	}
-
-	// Screenshot after rendering
-	if (_should_save_screenshot)
-	{
-		save_screenshot(_screenshot_save_before ? "After" : std::string_view());
-		_should_save_screenshot = false;
-	}
-
-	// Apply original app state back
 	apply_state(cmd_list, _app_state);
 
 #if RESHADE_ADDON
 	_is_in_present_call = false;
 #endif
+
+	reshade::log::message(log::level::debug,"on_nfs_present(): EXIT — start frame %llu, _effects_rendered_this_frame = %d",
+		_frame_count, _effects_rendered_this_frame);
 }
 
 void reshade::runtime::on_present()
 {
-	// if (!g_runtime_nfs)
-	// 	g_runtime_nfs = this;
+	// _nfs_backbuffer_snapshot.handle = 0;
 
+	_effects_rendered_this_frame = false;
 	reshade::log::message(log::level::debug, "on_present(): start frame %llu", _frame_count);
-
-	// on_nfs_present(true, _frame_count);
-	// Only call on_nfs_present here if we're not waiting for frontend to trigger it
-	// _effects_rendered_this_frame = false;
 	on_present_clean();
 	reshade::log::message(log::level::debug, "on_present(): EXIT — _effects_rendered_this_frame = %d",
 		                      _effects_rendered_this_frame);
 
-	// _effects_rendered_this_frame = true;
 }
 
 void reshade::runtime::on_present_clean()
@@ -1001,6 +791,8 @@ void reshade::runtime::on_present_clean()
 		}
 	}
 
+	// _nfs_backbuffer_snapshot = _back_buffer_resolved;
+
 	// Lock input so it cannot be modified by other threads while we are reading it here
 	std::unique_lock<std::recursive_mutex> input_lock;
 	if (_input != nullptr)
@@ -1017,15 +809,30 @@ void reshade::runtime::on_present_clean()
 	{
 		if (_back_buffer_resolved != 0)
 		{
-// #ifdef GAME_UC
-// 			runtime::render_effects(cmd_list, _back_buffer_targets[back_buffer_index],
-// 			                        _back_buffer_targets[back_buffer_index + 1]);
-// #else
+#ifdef GAME_UC
+			// if (_effects_rendered_per_frame[back_buffer_index])
+			// {
+			// 	// Composite from _scene_texture_output into _back_buffer_resolved
+			// 	cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
+			// 	cmd_list->barrier(_back_buffer_resolved, api::resource_usage::render_target, api::resource_usage::copy_dest);
+			// 	cmd_list->copy_resource(_back_buffer_resolved, _scene_texture_output);
+			// 	cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::render_target);
+			// 	cmd_list->barrier(_back_buffer_resolved, api::resource_usage::copy_dest, api::resource_usage::render_target);
+			// }
+			// else
+			{
+				// Render effects if not done earlier
+				runtime::render_effects(cmd_list, _scene_rtv, _scene_rtv);
+				// cmd_list->copy_resource(_back_buffer_resolved, _scene_texture_output);
+				// _effects_rendered_per_frame[back_buffer_index] = true;
+			}
+#else
 			runtime::render_effects(cmd_list, _back_buffer_targets[0], _back_buffer_targets[1]);
-// #endif
+#endif
 		}
 		else
 		{
+			// Fallback: non-MSAA
 			cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::render_target);
 			runtime::render_effects(cmd_list, _back_buffer_targets[back_buffer_index], _back_buffer_targets[back_buffer_index + 1]);
 			cmd_list->barrier(back_buffer_resource, api::resource_usage::render_target, api::resource_usage::present);
@@ -1224,8 +1031,18 @@ void reshade::runtime::on_present_clean()
 		}
 		else
 		{
+#ifdef GAME_UC
+			// if (!_effects_rendered_per_frame[back_buffer_index])
+			{
+				// Replace backbuffer contents with effects-rendered scene from pre-HUD _scene_texture_output
+				// cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
+				// cmd_list->barrier(_back_buffer_resolved, api::resource_usage::render_target, api::resource_usage::copy_dest);
+				cmd_list->copy_resource(_back_buffer_resolved, _scene_texture_output);
+				// cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::render_target);
+				// cmd_list->barrier(_back_buffer_resolved, api::resource_usage::copy_dest, api::resource_usage::render_target);
+			}
+#endif
 			const api::resource_usage state_new[2] = { api::resource_usage::copy_dest, api::resource_usage::copy_source };
-
 			cmd_list->barrier(2, resources, state_old, state_new);
 			cmd_list->copy_texture_region(_back_buffer_resolved, 0, nullptr, back_buffer_resource, 0, nullptr);
 			cmd_list->barrier(2, resources, state_new, state_final);
@@ -1237,7 +1054,42 @@ void reshade::runtime::on_present_clean()
 
 	_is_in_present_call = false;
 #endif
-	_effects_rendered_this_frame = false;
+
+
+	// After all ReShade UI, screenshots, input, etc.
+	back_buffer_index = _swapchain->get_current_back_buffer_index() * 2;
+	const api::resource final_back_buffer = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+
+	// Composite
+	if (_effects_rendered_this_frame && _scene_texture_output.handle != 0)
+	{
+		// 🛑 Insert visual debug: confirm back buffer
+		reshade::log::message(log::level::info,
+		                      "🟩 Copying _scene_texture_output (%016" PRIx64 ") -> final_back_buffer (%016" PRIx64
+		                      ")",
+		                      _scene_texture_output.handle, final_back_buffer.handle);
+
+		// Make sure barriers are correct
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target,
+		                  api::resource_usage::copy_source);
+		cmd_list->barrier(final_back_buffer, api::resource_usage::render_target, api::resource_usage::copy_dest);
+		cmd_list->copy_resource(final_back_buffer, _scene_texture_output);
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source,
+		                  api::resource_usage::render_target);
+		cmd_list->barrier(final_back_buffer, api::resource_usage::copy_dest, api::resource_usage::present);
+
+		reshade::log::message(log::level::info,
+		                      "🟩 Composited _scene_texture_output (%016" PRIx64 ") into final backbuffer (%016"
+		                      PRIx64
+		                      ")",
+		                      _scene_texture_output.handle, final_back_buffer.handle);
+	}
+
+	// ✅ Block frontend HUD drawing to test if it was overwriting effects
+
+
+	reshade::log::message(log::level::info,
+		"✅ Final back buffer = %08X", final_back_buffer.handle);
 
 	// Apply previous state from application
 	apply_state(cmd_list, _app_state);

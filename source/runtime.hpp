@@ -63,17 +63,9 @@ namespace reshade
 
 		bool on_init();
 		void on_reset();
-		void set_uniform_value_resource(api::effect_uniform_variable handle, const api::resource_view* values,
-		                                size_t count,
-		                                size_t array_index);
-		reshade::api::effect_uniform_variable find_uniform_variable_by_name(const char* name);
-		reshade::api::effect_uniform_variable find_uniform_variable(const std::string& name);
-		bool ensure_render_targets();
-		bool set_sampler_uniform(const char* name, reshade::api::resource_view view);
-		void call_draw_gui() { draw_gui(); }
 		void on_present();
 		void on_present_clean();
-		void on_nfs_present(bool force_present, uint64_t frame);
+		void on_nfs_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
 
@@ -87,6 +79,7 @@ namespace reshade
 		void *get_hwnd() const final { return _swapchain->get_hwnd(); }
 
 		api::resource get_back_buffer(uint32_t index) final { return _swapchain->get_back_buffer(index); }
+
 		uint32_t get_back_buffer_count() const final { return _swapchain->get_back_buffer_count(); }
 		uint32_t get_current_back_buffer_index() const final { return _swapchain->get_current_back_buffer_index(); }
 
@@ -210,7 +203,12 @@ namespace reshade
 		void reload_effect_next_frame(const char *effect_name) final;
 
 
-// ToDo: Remove later - unused
+// NFS Stuff
+		bool _effects_rendered_per_frame[3] = {}; // assume triple buffering
+		// api::resource game_backbuffer = _device->get_resource_from_view(_back_buffer_targets[_back_buffer_resolved != 0 ? 2 : 0 + _swapchain->get_current_back_buffer_index * 2]);
+		std::vector<api::resource_view> get_back_buffer_targets() { return _back_buffer_targets; }
+		api::resource get_back_buffer_resolved() { return  _back_buffer_resolved; }
+		api::resource _nfs_backbuffer_snapshot = {};
 		// size_t get_technique_count() const { return _techniques.size(); }
 		void wrapped_update_effects() { update_effects(); }
 
@@ -230,7 +228,7 @@ namespace reshade
 
 		// Input backbuffer copy
 		api::resource _scene_texture_input = {};
-		api::resource_view _scene_srv = {}; // NEW — must be added
+		api::resource_view _scene_srv = {};
 
 		// Offscreen target for rendering
 		api::resource _scene_texture_output = {};

@@ -2858,22 +2858,17 @@ void __declspec(naked) MotionBlur_EntryPoint()
 #endif
 void __stdcall ReShade_Hook()
 {
-	reshade::log::message(reshade::log::level::debug, "FEManager_Render_Hook_Impl(): Called");
-
 	if (reshade::runtime* runtime = reshade::g_runtime_nfs)
 	{
+		reshade::log::message(reshade::log::level::debug, "🎯 FEManager_Render_Hook(): Entered. Frame=%llu", runtime->get_frame_count());
+		if (runtime->get_is_initialized() && !runtime->get_is_in_present_call())
+		{
 #ifdef GAME_UC
-		bGlobalMotionBlur = runtime->bMotionBlur;
+			bGlobalMotionBlur = runtime->bMotionBlur;
 #endif
-		if (!runtime->get_is_in_present_call()) // 💡 prevent re-entrant render call
-		{
 			g_force_fe_present_pass = true;
-			runtime->on_nfs_present(true, ++g_fe_frame_counter);
+			runtime->on_nfs_present();
 			g_force_fe_present_pass = false;
-		}
-		else
-		{
-			reshade::log::message(reshade::log::level::debug, "⏩ Skipped on_nfs_present(): already in present call");
 		}
 	}
 }
@@ -2881,15 +2876,68 @@ void __stdcall ReShade_Hook()
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
+int FE_EndFrame = FE_EndFrame_Addr;
+int FRONTEND_RENDER_DRIVER = FRONTEND_RENDER_DRIVER_ADDR;
+int FRONTEND_RENDER_DRIVER_RET = FRONTEND_RENDER_DRIVER_RET_ADDR;
+int RETURN_TO_7B3018 = RETURN_TO_7B3018_ADDR;
+int SAFER_HOOK_RET = SAFER_HOOK_RET_ADDR;
+int DRAW_FENG_RET = DRAW_FENG_RET_ADDR;
+
 void __declspec(naked) ReShade_EntryPoint()
 {
-	_asm mov NFSUC_EntryPoint_EBX, ebx
+	__asm {
+		pushad
+		pushfd
+	}
+
+	// Inject ReShade effect pass before FE rendering
 	ReShade_Hook();
-	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
-		_asm jmp NFSUC_ExitPoint1
-	_asm jmp NFSUC_ExitPoint2
+
+	__asm {
+		popfd
+		popad
+
+		// Re-inject original instruction that was overwritten
+		mov byte ptr ds:[0x00D52ECA], 1
+
+		jmp DRAW_FENG_RET
+	}
 }
 
+// void __declspec(naked) ReShade_EntryPoint()
+// {
+// 	__asm {
+// 		// Save CPU state
+// 		pushad
+// 		pushfd
+// 	}
+//
+// 	// Call your logic
+// 	ReShade_Hook();
+//
+// 	__asm {
+// 		// Restore CPU state
+// 		popfd
+// 		popad
+//
+// 		// Call original FE_RenderDriver (sub_7B2F20)
+// 		call FE_EndFrame
+//
+// 		// Return to game
+// 		mov byte ptr ds:0x1270C28, 1 ; Preserve side effect
+// 		jmp FRONTEND_RENDER_DRIVER_RET ; Preserve game flow
+// 	}
+// }
+
+
+// void __declspec(naked) ReShade_EntryPoint()
+// {
+// 	_asm mov NFSUC_EntryPoint_EBX, ebx
+// 	ReShade_Hook();
+// 	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
+// 		_asm jmp NFSUC_ExitPoint1
+// 	_asm jmp NFSUC_ExitPoint2
+// }
 
 #else
 void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsigned int))FEMANAGER_RENDER_ADDRESS;

@@ -364,7 +364,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 				// NFS INJECTION
 
 #ifdef NFS_MULTITHREAD
-				injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+				// injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+				// injector::MakeJMP(FRONTEND_RENDER_DRIVER_ADDR, ReShade_EntryPoint, true);
+				injector::MakeJMP(DRAW_FENG_BOOL_ADDR, ReShade_EntryPoint, true);
+				// injector::MakeJMP(SAFER_HOOK_ADDR, ReShade_EntryPoint, true);
 				injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
 #else
 #ifdef NFS_MULTITHREAD
