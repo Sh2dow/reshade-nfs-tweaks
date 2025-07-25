@@ -38,8 +38,6 @@
 
 using reshade::d3d9::to_handle;
 
-Direct3DDevice9* g_pd3dDevice;
-
 extern thread_local bool g_in_d3d9_runtime;
 extern thread_local bool g_in_dxgi_runtime;
 
@@ -79,10 +77,17 @@ const reshade::api::subresource_box *convert_rect_to_box(const POINT *point, LON
 	return &box;
 }
 
+#ifdef GAME_UC
+Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9   *original, bool use_software_rendering) :
+	device_impl(original, g_runtime),
+	_extended_interface(false),
+	_use_software_rendering(use_software_rendering)
+#else
 Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9   *original, bool use_software_rendering) :
 	device_impl(original),
 	_extended_interface(false),
-	_use_software_rendering(use_software_rendering)
+	_use_software_rendering(use_software_rendering),
+#endif
 {
 	g_pd3dDevice = this;
 	assert(_orig != nullptr);
@@ -93,6 +98,7 @@ Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9   *original, bool use_software
 
 	on_init();
 }
+
 Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9Ex *original, bool use_software_rendering) :
 	Direct3DDevice9(static_cast<IDirect3DDevice9 *>(original), use_software_rendering)
 {
@@ -2856,73 +2862,88 @@ void __declspec(naked) MotionBlur_EntryPoint()
 	}
 }
 #endif
+// void __stdcall ReShade_Hook()
+// {
+// 	if (reshade::runtime* runtime = reshade::g_runtime_nfs)
+// 	{
+// 		reshade::log::message(reshade::log::level::debug, "🎯 FEManager_Render_Hook(): Entered. Frame=%llu",
+// 		                      runtime->get_frame_count());
+//
+// 		// g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+//
+// 		// 🔧 Assign device → runtime back-reference
+// 		if (runtime->get_device() != nullptr)
+// 		{
+// 			if (auto* device_impl = reinterpret_cast<reshade::d3d9::device_impl*>(runtime))
+// 				if (device_impl->_runtime == nullptr || !device_impl->_runtime->get_is_initialized())
+// 					device_impl->set_runtime(runtime);
+// 		}
+//
+// 		if (runtime->get_is_initialized() && !runtime->get_is_in_present_call())
+// 		{
+// #ifdef GAME_UC
+// 			bGlobalMotionBlur = runtime->bMotionBlur;
+// #endif
+// 			g_force_fe_present_pass = true;
+// 			runtime->on_nfs_present();
+// 			g_force_fe_present_pass = false;
+// 		}
+// 	}
+// }
+
 void __stdcall ReShade_Hook()
 {
-	if (reshade::runtime* runtime = reshade::g_runtime_nfs)
+	if (reshade::g_runtime_nfs)
 	{
-		reshade::log::message(reshade::log::level::debug, "🎯 FEManager_Render_Hook(): Entered. Frame=%llu", runtime->get_frame_count());
-		if (runtime->get_is_initialized() && !runtime->get_is_in_present_call())
+		g_runtime = reshade::g_runtime_nfs;
+		reshade::log::message(reshade::log::level::debug, "🎯 FEManager_Render_Hook(): Entered. Frame=%llu", g_runtime->get_frame_count());
+
+		// Only set _runtime AFTER runtime is fully initialized
+		if (g_runtime->get_is_initialized())
 		{
+			reshade::api::device* device = g_runtime->get_device();
+			if (device != nullptr)
+			{
+				// Safe only if device is a d3d9::device_impl (and runtime is ready)
+				auto* device_impl = reinterpret_cast<reshade::d3d9::device_impl*>(device);
+				static bool s_runtime_bound = false;
+				if (!s_runtime_bound && device_impl != nullptr && device_impl->_runtime == nullptr)
+				{
+					// device_impl->_runtime = g_runtime;
+					s_runtime_bound = true;
+					reshade::log::message(reshade::log::level::info, "✅ Bound runtime to device_impl (first time).");
+				}
+			}
+
 #ifdef GAME_UC
-			bGlobalMotionBlur = runtime->bMotionBlur;
+			bGlobalMotionBlur = g_runtime->bMotionBlur;
 #endif
 			g_force_fe_present_pass = true;
-			runtime->on_nfs_present();
+			g_runtime->on_nfs_present();
 			g_force_fe_present_pass = false;
+		}
+		else
+		{
+			reshade::log::message(reshade::log::level::warning, "⚠️ ReShade runtime not initialized yet — skipping FE present.");
 		}
 	}
 }
 
+
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
-int ORIGINAL_FE_CHECK = 0x00831F80;
-int SUB_78B7F0 = 0x0078B7F0;
-int sub_826540 = 0x00826540;
-int HOOK = 0x007B3044;
-int HOOK_RET = HOOK_RET_ADDR;
-int FRONTEND_RENDER_LIST_HEAD_ADDR = FRONTEND_LIST_HEAD_ADDR;
-int SEH_596300 = 0x00B9E32E;
-int DRAW_FENG_RET = DRAW_FENG_RET_ADDR;
-int DRAW_FENG_BOOL = DRAW_FENG_BOOL_ADDR;
-int FRONTEND_RENDER_DRIVER_RET = FRONTEND_RENDER_DRIVER_RET_ADDR;
-int FE_EndFrame = FE_EndFrame_Addr;
 
 bool hook_installed = false;
 
 void __declspec(naked) ReShade_EntryPoint()
 {
-	__asm {
-		// Save CPU state
-		pushad
-		pushfd
-	}
-
-	// Call your logic
+	_asm mov NFSUC_EntryPoint_EBX, ebx
 	ReShade_Hook();
-
-	__asm {
-		// Restore CPU state
-		popfd
-		popad
-
-		// Call original FE_RenderDriver (sub_7B2F20)
-		call FE_EndFrame
-
-		// Return to game
-		mov byte ptr ds:0x1270C28, 1 ; Preserve side effect
-		jmp FRONTEND_RENDER_DRIVER_RET ; Preserve game flow
-	}
+	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
+		_asm jmp NFSUC_ExitPoint1
+	_asm jmp NFSUC_ExitPoint2
 }
-
-// void __declspec(naked) ReShade_EntryPoint()
-// {
-// 	_asm mov NFSUC_EntryPoint_EBX, ebx
-// 	ReShade_Hook();
-// 	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
-// 		_asm jmp NFSUC_ExitPoint1
-// 	_asm jmp NFSUC_ExitPoint2
-// }
 
 #else
 void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsigned int))FEMANAGER_RENDER_ADDRESS;

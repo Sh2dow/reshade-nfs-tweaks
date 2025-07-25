@@ -7,13 +7,17 @@
 
 #include "d3d9_impl_state_block.hpp"
 #include "reshade_api_object_impl.hpp"
+#include "runtime.hpp"
 
 namespace reshade::d3d9
 {
 	class device_impl : public api::api_object_impl<IDirect3DDevice9 *, api::device, api::command_queue, api::command_list>
 	{
 	public:
-		explicit device_impl(IDirect3DDevice9 *device);
+
+		runtime* const _runtime;
+		explicit device_impl(IDirect3DDevice9* device, runtime* runtime = nullptr);
+
 		~device_impl();
 
 		api::device_api get_api() const final { return api::device_api::d3d9; }

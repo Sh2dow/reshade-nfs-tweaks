@@ -45,8 +45,13 @@ static bool convert_format_internal(reshade::api::format format, D3DFORMAT &inte
 	return internal_format != D3DFMT_UNKNOWN;
 }
 
+#ifdef NFS_MULTITHREAD
+reshade::d3d9::device_impl::device_impl(IDirect3DDevice9 *device, runtime* runtime)
+	: api_object_impl(device), _caps(), _cp(), _backup_state(device), _runtime(runtime)
+#else
 reshade::d3d9::device_impl::device_impl(IDirect3DDevice9 *device) :
 	api_object_impl(device), _caps(), _cp(), _backup_state(device)
+#endif
 {
 	_orig->GetDirect3D(&_d3d);
 	_orig->GetDeviceCaps(&_caps);
@@ -57,6 +62,7 @@ reshade::d3d9::device_impl::device_impl(IDirect3DDevice9 *device) :
 
 	on_init();
 }
+
 reshade::d3d9::device_impl::~device_impl()
 {
 	on_reset();
@@ -1343,7 +1349,7 @@ void reshade::d3d9::device_impl::update_texture_region(const api::subresource_da
 					IDirect3DCubeTexture9_GetCubeMapSurface(intermediate.get(), face, 0, &src_surface);
 					com_ptr<IDirect3DSurface9> dst_surface;
 					IDirect3DCubeTexture9_GetCubeMapSurface(static_cast<IDirect3DCubeTexture9 *>(object), face, subresource, &dst_surface);
-					
+
 					_orig->StretchRect(src_surface.get(), nullptr, dst_surface.get(), convert_box_to_rect(box, dst_rect), D3DTEXF_NONE);
 				}
 			}

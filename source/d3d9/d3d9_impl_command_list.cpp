@@ -93,6 +93,16 @@ void reshade::d3d9::device_impl::end_render_pass()
 }
 void reshade::d3d9::device_impl::bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view *rtvs, api::resource_view dsv)
 {
+	// 🔧 Add this line to track the RT in runtime
+	if (_runtime != nullptr && _runtime->_scene_texture.handle != 0)
+	{
+		_runtime->track_render_targets(nullptr, count, rtvs);
+	}
+	else
+	{
+		reshade::log::message(log::level::warning, "⚠️ _runtime not fully initialized, skipping RTV tracking");
+	}
+
 	if (count != 0)
 	{
 		assert(count <= _caps.NumSimultaneousRTs);

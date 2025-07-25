@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <array>
+
 #include "reshade_api.hpp"
 #include "state_block.hpp"
 #include "imgui_code_editor.hpp"
@@ -67,7 +69,9 @@ namespace reshade
 		void on_present_clean();
 		void bind_pre_fe_color_source();
 		void unbind_pre_fe_color_source();
-		uint32_t get_current_back_buffer_target_index() const;
+		void track_render_targets(api::command_list* cmd_list, uint32_t count, const api::resource_view* rtvs);
+		void bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view* rtvs,
+		                                           api::resource_view dsv);
 		void on_nfs_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
@@ -207,6 +211,8 @@ namespace reshade
 
 
 		// NFS Stuff
+		bool _app_state_captured_this_frame = false;
+
 		api::resource_view _orig_color_srv[2] = {};
 		api::resource_view _orig_color_rtv[2] = {};
 
@@ -214,6 +220,10 @@ namespace reshade
 		api::resource_view _effect_color_rtv[2] = {};
 
 		uint32_t _back_buffer_index_this_frame = 0;
+
+		std::array<reshade::api::resource_view, 8> _last_bound_rtvs;
+		uint32_t _last_bound_rtv_count = 0;
+		api::resource_view _last_bound_rtv = {};
 
 		bool _effects_rendered_per_frame[3] = {}; // assume triple buffering
 		// api::resource game_backbuffer = _device->get_resource_from_view(_back_buffer_targets[_back_buffer_resolved != 0 ? 2 : 0 + _swapchain->get_current_back_buffer_index * 2]);
