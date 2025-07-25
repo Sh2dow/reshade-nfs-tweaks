@@ -69,9 +69,6 @@ namespace reshade
 		void on_present_clean();
 		void bind_pre_fe_color_source();
 		void unbind_pre_fe_color_source();
-		void track_render_targets(api::command_list* cmd_list, uint32_t count, const api::resource_view* rtvs);
-		void bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view* rtvs,
-		                                           api::resource_view dsv);
 		void on_nfs_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
@@ -211,7 +208,7 @@ namespace reshade
 
 
 		// NFS Stuff
-		bool _app_state_captured_this_frame = false;
+		// bool _app_state_captured_this_frame = false;
 
 		api::resource_view _orig_color_srv[2] = {};
 		api::resource_view _orig_color_rtv[2] = {};

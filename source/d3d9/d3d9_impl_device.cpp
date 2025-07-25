@@ -45,13 +45,8 @@ static bool convert_format_internal(reshade::api::format format, D3DFORMAT &inte
 	return internal_format != D3DFMT_UNKNOWN;
 }
 
-#ifdef NFS_MULTITHREAD
-reshade::d3d9::device_impl::device_impl(IDirect3DDevice9 *device, runtime* runtime)
-	: api_object_impl(device), _caps(), _cp(), _backup_state(device), _runtime(runtime)
-#else
 reshade::d3d9::device_impl::device_impl(IDirect3DDevice9 *device) :
 	api_object_impl(device), _caps(), _cp(), _backup_state(device)
-#endif
 {
 	_orig->GetDirect3D(&_d3d);
 	_orig->GetDeviceCaps(&_caps);
@@ -62,7 +57,6 @@ reshade::d3d9::device_impl::device_impl(IDirect3DDevice9 *device) :
 
 	on_init();
 }
-
 reshade::d3d9::device_impl::~device_impl()
 {
 	on_reset();

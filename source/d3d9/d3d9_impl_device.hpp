@@ -7,17 +7,23 @@
 
 #include "d3d9_impl_state_block.hpp"
 #include "reshade_api_object_impl.hpp"
-#include "runtime.hpp"
 
 namespace reshade::d3d9
 {
 	class device_impl : public api::api_object_impl<IDirect3DDevice9 *, api::device, api::command_queue, api::command_list>
 	{
 	public:
+#ifdef GAME_UC
+		reshade::api::resource_view _last_render_targets[8] = {};
+		uint32_t _last_render_target_count = 0;
+		reshade::api::resource_view _last_known_backbuffer = {};
 
-		runtime* const _runtime;
-		explicit device_impl(IDirect3DDevice9* device, runtime* runtime = nullptr);
+		void track_render_targets_if_external(uint32_t count, const reshade::api::resource_view* rtvs,
+		                                      reshade::api::resource_view exclude_rtv = {0});
 
+#endif
+
+		explicit device_impl(IDirect3DDevice9* device);
 		~device_impl();
 
 		api::device_api get_api() const final { return api::device_api::d3d9; }

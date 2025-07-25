@@ -36,9 +36,6 @@
 #include <d3dcompiler.h>
 #include <sk_hdr_png.hpp>
 
-#include "d3d9/d3d9_impl_device.hpp"
-#include "d3d9/d3d9_swapchain.hpp"
-
 bool resolve_path(std::filesystem::path &path, std::error_code &ec)
 {
 	// First convert path to an absolute path
@@ -259,13 +256,13 @@ bool reshade::runtime::on_init()
 {
 	assert(!_is_initialized);
 
+#ifdef  GAME_UC
 	if (!g_runtime_nfs)
 		g_runtime_nfs = this;
 
-// #if RESHADE_API_D3D9
-// 	if (auto *impl = reinterpret_cast<d3d9::device_impl *>(g_pd3dDevice))
-// 		impl->_runtime = this;
-// #endif
+	// if (auto *impl = reinterpret_cast<d3d9::device_impl *>(g_pd3dDevice))
+	// 	impl->_runtime = this;
+#endif
 
 	const api::resource_desc back_buffer_desc = _device->get_resource_desc(_swapchain->get_back_buffer(0));
 
@@ -725,31 +722,6 @@ void reshade::runtime::unbind_pre_fe_color_source()
  	// Restore map if you changed it
  }
 
- void reshade::runtime::track_render_targets(api::command_list *cmd_list, uint32_t count, const api::resource_view *rtvs)
- {
- 	_last_bound_rtv_count = count;
- 	for (uint32_t i = 0; i < count; ++i)
- 	{
- 		_last_bound_rtvs[i] = rtvs[i];
-
- 		// ✅ NEW: Track first valid RTV as the last known back buffer for on_nfs_present
- 		if (_last_bound_rtv.handle == 0 && rtvs[i].handle != 0)
- 		{
- 			_last_bound_rtv = rtvs[i];
- 			reshade::log::message(reshade::log::level::info,
- 				"🔍 Tracked RTV[%u] for FE render hook: %016" PRIx64, i, rtvs[i].handle);
- 		}
- 	}
- }
-
- void reshade::runtime::bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view *rtvs, api::resource_view dsv)
- {
- 	// Your backend-specific logic to bind RT + DS goes here
-
- 	// 🔁 Track current RTVs for later use in FE hook
- 	track_render_targets(_graphics_queue->get_immediate_command_list(), count, rtvs);
- }
-
 void reshade::runtime::on_nfs_present()
 {
 	if (!_is_initialized || !_effects_enabled || _techniques.empty() || is_loading())
@@ -784,14 +756,17 @@ void reshade::runtime::on_nfs_present()
 	                      target_index, final_backbuffer_rtv.handle);
 
 	// 💾 Save app state (once)
-	if (_frame_count > 30 && !_app_state_captured_this_frame && _device->get_api() == api::device_api::d3d9)
+#ifdef GAME_UC
+	if (_frame_count > 0)
 	{
 		if (_app_state.handle != 0)
 			_app_state = {};
 
 		capture_state(cmd_list, _app_state);
-		_app_state_captured_this_frame = true;
 	}
+#else
+	capture_state(cmd_list, _app_state);
+#endif
 
 	// 🔁 Copy backbuffer → _scene_texture_input
 	cmd_list->barrier(final_back_buffer, api::resource_usage::present, api::resource_usage::copy_source);
@@ -833,9 +808,7 @@ void reshade::runtime::on_nfs_present()
 	*drawHUDAddr = oldDrawHUD;
 
 	// ✅ Reapply game state to avoid side effects
-	if (_app_state_captured_this_frame)
 		apply_state(cmd_list, _app_state);
-
 
 #if RESHADE_ADDON
 	_is_in_present_call = false;
@@ -855,7 +828,6 @@ void reshade::runtime::on_present()
 	on_present_clean();
 	reshade::log::message(log::level::debug, "on_present(): EXIT — _effects_rendered_this_frame = %d",
 		                      _effects_rendered_this_frame);
-	_app_state_captured_this_frame = false;
 	_effects_rendered_this_frame = false;
 }
 
@@ -871,13 +843,12 @@ void reshade::runtime::on_present_clean()
 	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
 
 #ifdef GAME_UC
-	if (_frame_count > 30 && !_app_state_captured_this_frame && _device->get_api() == api::device_api::d3d9)
+	if (_frame_count > 0)
 	{
 		if (_app_state.handle != 0)
 			_app_state = {};
 
 		capture_state(cmd_list, _app_state);
-		_app_state_captured_this_frame = true;
 	}
 #else
 	capture_state(cmd_list, _app_state);
@@ -1196,9 +1167,6 @@ void reshade::runtime::on_present_clean()
 		"✅ on_present_clean(): Final back buffer = %08X", final_back_buffer.handle);
 
 	// Apply previous state from application
-#ifdef NFS_MULTITHREAD
-	if (_app_state_captured_this_frame)
-#endif
 	apply_state(cmd_list, _app_state);
 
 	// Update input status

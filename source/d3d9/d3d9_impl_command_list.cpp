@@ -9,6 +9,8 @@
 #include <algorithm> // std::max
 #include <utf8/unchecked.h>
 
+#include "dll_log.hpp"
+
 static void convert_cube_uv_to_vec(D3DCUBEMAP_FACES face, float u, float v, float &x, float &y, float &z)
 {
 	u = 2.0f * u - 1.0f;
@@ -91,17 +93,33 @@ void reshade::d3d9::device_impl::end_render_pass()
 	// This fixes artifacts in Dragon's Dogma: Dark Arisen for some reason (even though this render state is reset by the state block in 'swapchain_impl' as well)
 	_orig->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
 }
+
+void reshade::d3d9::device_impl::track_render_targets_if_external(
+	uint32_t count,
+	const reshade::api::resource_view *rtvs,
+	reshade::api::resource_view exclude_rtv)
+{
+	_last_render_target_count = count;
+
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		_last_render_targets[i] = rtvs[i];
+
+		if (_last_known_backbuffer.handle == 0 &&
+			rtvs[i].handle != 0 &&
+			rtvs[i].handle != exclude_rtv.handle)
+		{
+			_last_known_backbuffer = rtvs[i];
+			reshade::log::message(log::level::debug,
+				"🎯 Tracked RTV[{}] as backbuffer: {:016x}", i, rtvs[i].handle);
+		}
+	}
+}
+
 void reshade::d3d9::device_impl::bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view *rtvs, api::resource_view dsv)
 {
 	// 🔧 Add this line to track the RT in runtime
-	if (_runtime != nullptr && _runtime->_scene_texture.handle != 0)
-	{
-		_runtime->track_render_targets(nullptr, count, rtvs);
-	}
-	else
-	{
-		reshade::log::message(log::level::warning, "⚠️ _runtime not fully initialized, skipping RTV tracking");
-	}
+	track_render_targets_if_external(count, rtvs /* , exclude_rtv */);
 
 	if (count != 0)
 	{

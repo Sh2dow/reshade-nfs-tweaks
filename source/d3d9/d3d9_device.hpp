@@ -192,6 +192,5 @@ struct DECLSPEC_UUID("F1006E9A-1C51-4AF4-ACEF-3605D2D4C8EE") Direct3DDevice9 fin
 #endif
 };
 
-inline Direct3DDevice9* g_pd3dDevice;
-inline reshade::runtime* g_runtime;
+extern Direct3DDevice9* g_pd3dDevice;
 inline bool g_force_fe_present_pass;
