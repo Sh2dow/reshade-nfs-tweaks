@@ -69,6 +69,7 @@ namespace reshade
 		void on_present_clean();
 		void bind_pre_fe_color_source();
 		void unbind_pre_fe_color_source();
+		void _on_nfs_present();
 		uint32_t get_current_back_buffer_target_index() const;
 		void on_nfs_present();
 
