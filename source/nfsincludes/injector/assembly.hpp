@@ -6,19 +6,19 @@
  *  This software is provided 'as-is', without any express or implied
  *  warranty. In no event will the authors be held liable for any damages
  *  arising from the use of this software.
- * 
+ *
  *  Permission is granted to anyone to use this software for any purpose,
  *  including commercial applications, and to alter it and redistribute it
  *  freely, subject to the following restrictions:
- * 
+ *
  *     1. The origin of this software must not be misrepresented; you must not
  *     claim that you wrote the original software. If you use this software
  *     in a product, an acknowledgment in the product documentation would be
  *     appreciated but is not required.
- * 
+ *
  *     2. Altered source versions must be plainly marked as such, and must not be
  *     misrepresented as being the original software.
- * 
+ *
  *     3. This notice may not be removed or altered from any source
  *     distribution.
  *
@@ -53,11 +53,11 @@ namespace injector
             uint32_t arr[8];
             struct { uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax; };
         };
-        
+
         enum reg_name {
-            reg_edi, reg_esi, reg_ebp, reg_esp, reg_ebx, reg_edx, reg_ecx, reg_eax 
+            reg_edi, reg_esi, reg_ebp, reg_esp, reg_ebx, reg_edx, reg_ecx, reg_eax
         };
-        
+
         enum ef_flag {
             carry_flag = 0, parity_flag = 2, adjust_flag = 4, zero_flag = 6, sign_flag = 7,
             direction_flag = 10, overflow_flag = 11

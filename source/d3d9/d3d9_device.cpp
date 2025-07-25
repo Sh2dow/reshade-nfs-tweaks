@@ -2876,59 +2876,44 @@ void __stdcall ReShade_Hook()
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
-int FE_EndFrame = FE_EndFrame_Addr;
-int FRONTEND_RENDER_DRIVER = FRONTEND_RENDER_DRIVER_ADDR;
-int FRONTEND_RENDER_DRIVER_RET = FRONTEND_RENDER_DRIVER_RET_ADDR;
-int RETURN_TO_7B3018 = RETURN_TO_7B3018_ADDR;
-int SAFER_HOOK_RET = SAFER_HOOK_RET_ADDR;
+int ORIGINAL_FE_CHECK = 0x00831F80;
+int SUB_78B7F0 = 0x0078B7F0;
+int sub_826540 = 0x00826540;
+int HOOK = 0x007B3044;
+int HOOK_RET = HOOK_RET_ADDR;
+int FRONTEND_RENDER_LIST_HEAD_ADDR = FRONTEND_LIST_HEAD_ADDR;
+int SEH_596300 = 0x00B9E32E;
 int DRAW_FENG_RET = DRAW_FENG_RET_ADDR;
+int DRAW_FENG_BOOL = DRAW_FENG_BOOL_ADDR;
+int FRONTEND_RENDER_DRIVER_RET = FRONTEND_RENDER_DRIVER_RET_ADDR;
+int FE_EndFrame = FE_EndFrame_Addr;
+
+bool hook_installed = false;
 
 void __declspec(naked) ReShade_EntryPoint()
 {
 	__asm {
+		// Save CPU state
 		pushad
 		pushfd
 	}
 
-	// Inject ReShade effect pass before FE rendering
+	// Call your logic
 	ReShade_Hook();
 
 	__asm {
+		// Restore CPU state
 		popfd
 		popad
 
-		// Re-inject original instruction that was overwritten
-		mov byte ptr ds:[0x00D52ECA], 1
+		// Call original FE_RenderDriver (sub_7B2F20)
+		call FE_EndFrame
 
-		jmp DRAW_FENG_RET
+		// Return to game
+		mov byte ptr ds:0x1270C28, 1 ; Preserve side effect
+		jmp FRONTEND_RENDER_DRIVER_RET ; Preserve game flow
 	}
 }
-
-// void __declspec(naked) ReShade_EntryPoint()
-// {
-// 	__asm {
-// 		// Save CPU state
-// 		pushad
-// 		pushfd
-// 	}
-//
-// 	// Call your logic
-// 	ReShade_Hook();
-//
-// 	__asm {
-// 		// Restore CPU state
-// 		popfd
-// 		popad
-//
-// 		// Call original FE_RenderDriver (sub_7B2F20)
-// 		call FE_EndFrame
-//
-// 		// Return to game
-// 		mov byte ptr ds:0x1270C28, 1 ; Preserve side effect
-// 		jmp FRONTEND_RENDER_DRIVER_RET ; Preserve game flow
-// 	}
-// }
-
 
 // void __declspec(naked) ReShade_EntryPoint()
 // {

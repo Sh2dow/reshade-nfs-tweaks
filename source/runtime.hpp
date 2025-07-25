@@ -65,6 +65,9 @@ namespace reshade
 		void on_reset();
 		void on_present();
 		void on_present_clean();
+		void bind_pre_fe_color_source();
+		void unbind_pre_fe_color_source();
+		uint32_t get_current_back_buffer_target_index() const;
 		void on_nfs_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
@@ -203,7 +206,15 @@ namespace reshade
 		void reload_effect_next_frame(const char *effect_name) final;
 
 
-// NFS Stuff
+		// NFS Stuff
+		api::resource_view _orig_color_srv[2] = {};
+		api::resource_view _orig_color_rtv[2] = {};
+
+		api::resource_view _effect_color_srv[2] = {};
+		api::resource_view _effect_color_rtv[2] = {};
+
+		uint32_t _back_buffer_index_this_frame = 0;
+
 		bool _effects_rendered_per_frame[3] = {}; // assume triple buffering
 		// api::resource game_backbuffer = _device->get_resource_from_view(_back_buffer_targets[_back_buffer_resolved != 0 ? 2 : 0 + _swapchain->get_current_back_buffer_index * 2]);
 		std::vector<api::resource_view> get_back_buffer_targets() { return _back_buffer_targets; }
