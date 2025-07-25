@@ -69,6 +69,7 @@ namespace reshade
 		void on_present_clean();
 		void bind_pre_fe_color_source();
 		void unbind_pre_fe_color_source();
+		uint32_t get_current_back_buffer_target_index() const;
 		void on_nfs_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
@@ -208,14 +209,13 @@ namespace reshade
 
 
 		// NFS Stuff
-		// bool _app_state_captured_this_frame = false;
-
 		api::resource_view _orig_color_srv[2] = {};
 		api::resource_view _orig_color_rtv[2] = {};
 
 		api::resource_view _effect_color_srv[2] = {};
 		api::resource_view _effect_color_rtv[2] = {};
 
+		bool _app_state_captured_this_frame;
 		uint32_t _back_buffer_index_this_frame = 0;
 
 		std::array<reshade::api::resource_view, 8> _last_bound_rtvs;
