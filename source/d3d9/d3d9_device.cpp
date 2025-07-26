@@ -2856,37 +2856,12 @@ void __declspec(naked) MotionBlur_EntryPoint()
 }
 #endif
 
-void _ReShade_Hook()
-{
-	reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
-
-	g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
-	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr)
-		return;
-
-	// ✅ Run this BEFORE the frontend UI renders
-	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
-	{
-		g_pd3dDevice->rt_initialized_once = true;
-		reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu", reshade::g_runtime_nfs->get_frame_count());
-		if (reshade::g_runtime_nfs->get_is_initialized() && !reshade::g_runtime_nfs->get_is_in_present_call())
-		{
-#ifdef GAME_UC
-			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
-#endif
-			g_pd3dDevice->g_force_fe_present_pass = true;
-			reshade::g_runtime_nfs->on_nfs_present();
-			g_pd3dDevice->g_force_fe_present_pass = false;
-		}
-	}
-}
-
 void ReShade_Hook()
 {
-	reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
+	// reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
 
 	g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
-	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr)
+	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr || !g_pd3dDevice->_implicit_swapchain->_is_initialized)
 		return;
 
 	// ✅ Run this BEFORE the frontend UI renders
@@ -2894,15 +2869,11 @@ void ReShade_Hook()
 	{
 		g_pd3dDevice->rt_initialized_once = true;
 
-		reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu",
-		                      reshade::g_runtime_nfs->get_frame_count());
+		// reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu",
+		//                       reshade::g_runtime_nfs->get_frame_count());
 
 		if (!reshade::g_runtime_nfs->get_is_in_present_call())
 		{
-#ifdef GAME_UC
-			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
-#endif
-			// 🔥 Grab game's actual scene render target before FE
 			IDirect3DSurface9* game_rt_surface = nullptr;
 			if (SUCCEEDED(g_pd3dDevice->GetRenderTarget(0, &game_rt_surface)) && game_rt_surface != nullptr)
 			{
@@ -2916,9 +2887,8 @@ void ReShade_Hook()
 					reshade::api::resource_view_desc(reshade::api::format::unknown),
 					&reshade::g_runtime_nfs->_effect_color_srv[0]);
 
-
-				reshade::log::message(reshade::log::level::info,
-				                      "✅ ReShade_Hook: Captured game RT = %016llx", scene_resource.handle);
+				// reshade::log::message(reshade::log::level::info,
+				//                       "✅ ReShade_Hook: Captured game RT = %016llx", scene_resource.handle);
 
 				game_rt_surface->Release(); // Release COM ref
 			}
@@ -2928,10 +2898,11 @@ void ReShade_Hook()
 				                      "⚠️ ReShade_Hook: Failed to get game render target.");
 			}
 
-			// 🔁 Now render effects BEFORE the frontend
-			g_pd3dDevice->g_force_fe_present_pass = true;
-			reshade::g_runtime_nfs->on_nfs_present();
-			g_pd3dDevice->g_force_fe_present_pass = false;
+#ifdef GAME_UC
+			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
+#endif
+			reshade::g_runtime_nfs->on_present_original();
+			reshade::g_runtime_nfs->nfs_fe_passed = true;
 		}
 	}
 }
@@ -2940,22 +2911,12 @@ int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
 
-int sub_831FA0 = 0x00831FA0; // FEManager::Render
-int sub_77E320 = 0x007AE61B; // address after original 'call sub_831FA0'
 
 void __declspec(naked) ReShade_EntryPoint()
 {
 	_asm mov NFSUC_EntryPoint_EBX, ebx
 
-	reshade::log::message(reshade::log::level::info, "🧠 EBX = %08X", NFSUC_EntryPoint_EBX);
-
-	// Log before
-	reshade::log::message(reshade::log::level::info, "🟡 ReShade_EntryPoint: Before calling ReShade_Hook");
-
 	ReShade_Hook(); // ✅ Calls `runtime::on_nfs_present()` internally
-
-	// Log after
-	reshade::log::message(reshade::log::level::info, "🟢 ReShade_EntryPoint: After ReShade_Hook");
 
 	// Return to original flow
 	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))

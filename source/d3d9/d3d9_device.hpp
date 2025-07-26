@@ -16,10 +16,7 @@ struct DECLSPEC_UUID("F1006E9A-1C51-4AF4-ACEF-3605D2D4C8EE") Direct3DDevice9 fin
 
 	// NFS Stuff
 	Direct3DDevice9* g_pd3dDevice;
-	bool g_force_fe_present_pass;
 	bool rt_initialized_once;
-	// static uint64_t g_fe_frame_counter = 0;
-
 
 	Direct3DDevice9(IDirect3DDevice9   *original, bool use_software_rendering);
 	Direct3DDevice9(IDirect3DDevice9Ex *original, bool use_software_rendering);

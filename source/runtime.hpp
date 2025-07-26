@@ -67,17 +67,6 @@ namespace reshade
 		void on_reset();
 		void on_present();
 		void on_present_original();
-		void on_present_clean();
-		void bind_pre_fe_color_source();
-		void unbind_pre_fe_color_source();
-		bool capture_texture_dds(reshade::api::device* device, reshade::api::command_list* cmd_list,
-		                         reshade::api::resource texture, reshade::api::format format, uint32_t width,
-		                         uint32_t height,
-		                         const char* filename);
-		void bind_render_targets_and_depth_stencil(uint32_t count, const reshade::api::resource_view* rtvs,
-		                                           reshade::api::resource_view dsv);
-		uint32_t get_current_back_buffer_target_index() const;
-		void on_nfs_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
 
@@ -216,36 +205,16 @@ namespace reshade
 		void track_render_targets_if_external(uint32_t count, const api::resource_view* rtvs);
 
 		// NFS Stuff
-		api::resource_view _orig_color_srv[2] = {};
-		api::resource_view _effect_color_srv[2] = {};
-		api::resource _last_scene_resource = {};
-		uint32_t _back_buffer_index_this_frame = 0;
-
-		bool _app_state_captured_this_frame;
-
+		void on_nfs_present();
 		std::array<api::resource_view, 8> _last_bound_rtvs;
+		api::resource _last_scene_resource = {};
 
-		bool _effects_rendered_per_frame[3] = {}; // assume triple buffering
-		// api::resource game_backbuffer = _device->get_resource_from_view(_back_buffer_targets[_back_buffer_resolved != 0 ? 2 : 0 + _swapchain->get_current_back_buffer_index * 2]);
-		std::vector<api::resource_view> get_back_buffer_targets() { return _back_buffer_targets; }
-		api::resource get_back_buffer_resolved() { return  _back_buffer_resolved; }
+		api::resource_view _effect_color_srv[2] = {};
 
-		bool _nfs_scene_ready;
-		api::resource _nfs_backbuffer_snapshot = {};
-		// size_t get_technique_count() const { return _techniques.size(); }
-		void wrapped_update_effects() { update_effects(); }
-
+		bool nfs_fe_passed;
 		bool get_is_in_present_call() const { return _is_in_present_call; }
 		bool get_is_initialized() const { return _is_initialized; }
-		api::command_queue* get_graphics_queue() const { return _graphics_queue; }
 		uint64_t get_frame_count() const { return _frame_count; }
-		const std::vector<effect> &get_effects() const { return _effects; }
-		bool get_effects_rendered_this_frame() const { return _effects_rendered_this_frame; }
-		void set_effects_rendered_this_frame(bool value) { _effects_rendered_this_frame = value; }
-		const std::vector<technique> &get_techniques() const { return _techniques; }
-		bool update_effects_passed;
-		static bool logged;
-		static bool reshade_initialized_once;
 
 		api::resource _scene_texture = {};
 
