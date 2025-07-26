@@ -14,6 +14,7 @@
 #include <memory>
 #include <filesystem>
 #include <atomic>
+#include <functional>
 #include <shared_mutex>
 
 #include "dll_log.hpp"
@@ -204,9 +205,18 @@ namespace reshade
 		void reload_effect_next_frame(const char *effect_name) final;
 		void track_render_targets_if_external(uint32_t count, const api::resource_view* rtvs);
 
-		// NFS Stuff
-		void on_nfs_present();
-		std::array<api::resource_view, 8> _last_bound_rtvs;
+// NFS Stuff
+		bool is_gui_ready() const
+		{
+			return _imgui_context != nullptr && _is_initialized;
+		}
+
+#ifdef GAME_UC
+		bool bMotionBlur;
+		bool g_force_fe_present_pass;
+#endif
+		std::vector<api::resource_view> get_back_buffer_targets() { return _back_buffer_targets; }
+
 		api::resource _last_scene_resource = {};
 
 		api::resource_view _effect_color_srv[2] = {};
@@ -229,13 +239,6 @@ namespace reshade
 		// Optional depth (if you plan to expand)
 		api::resource_view _scene_depth_texture = {};
 
-// unused
-
-
-#ifdef GAME_UC
-		bool bMotionBlur;
-		bool g_force_fe_present_pass;
-#endif
 
 	private:
 		static void check_for_update();

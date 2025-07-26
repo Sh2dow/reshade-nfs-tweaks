@@ -2858,51 +2858,37 @@ void __declspec(naked) MotionBlur_EntryPoint()
 
 void ReShade_Hook()
 {
-	// reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
-
-	g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
-	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr || !g_pd3dDevice->_implicit_swapchain->_is_initialized)
+	// 🔒 Use raw device to avoid uninitialized ReShade wrapper logic
+	IDirect3DDevice9 *raw_device = *(IDirect3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
+	if (!raw_device)
 		return;
 
-	// ✅ Run this BEFORE the frontend UI renders
+	// ✅ Don't use Direct3DDevice9 wrapper here — ReShade internals might not be ready
 	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
 	{
-		g_pd3dDevice->rt_initialized_once = true;
-
-		// reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu",
-		//                       reshade::g_runtime_nfs->get_frame_count());
-
 		if (!reshade::g_runtime_nfs->get_is_in_present_call())
 		{
-			IDirect3DSurface9* game_rt_surface = nullptr;
-			if (SUCCEEDED(g_pd3dDevice->GetRenderTarget(0, &game_rt_surface)) && game_rt_surface != nullptr)
+			auto api = reshade::g_runtime_nfs->get_device()->get_api();
+
+			// Delay for Vulkan (DXVK) until it's safe
+			if (api != reshade::api::device_api::vulkan || reshade::g_runtime_nfs->get_swapchain())
 			{
-				reshade::api::resource scene_resource = {reinterpret_cast<uintptr_t>(game_rt_surface)};
-
-				reshade::g_runtime_nfs->_last_scene_resource = scene_resource;
-
-				reshade::g_runtime_nfs->get_device()->create_resource_view(
-					scene_resource,
-					reshade::api::resource_usage::shader_resource,
-					reshade::api::resource_view_desc(reshade::api::format::unknown),
-					&reshade::g_runtime_nfs->_effect_color_srv[0]);
-
-				// reshade::log::message(reshade::log::level::info,
-				//                       "✅ ReShade_Hook: Captured game RT = %016llx", scene_resource.handle);
-
-				game_rt_surface->Release(); // Release COM ref
+				static int skip_frames = 2;
+				if (skip_frames > 0)
+				{
+					--skip_frames;
+					reshade::log::message(reshade::log::level::info, "⏳ Delaying ReShade init for %d more frames", skip_frames);
+				}
+				else
+				{
+					reshade::g_runtime_nfs->on_present_original();
+					reshade::g_runtime_nfs->nfs_fe_passed = true;
+				}
 			}
 			else
 			{
-				reshade::log::message(reshade::log::level::warning,
-				                      "⚠️ ReShade_Hook: Failed to get game render target.");
+				reshade::log::message(reshade::log::level::debug, "⏳ Skipping on_present_original() on Vulkan (not safe yet)");
 			}
-
-#ifdef GAME_UC
-			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
-#endif
-			reshade::g_runtime_nfs->on_present_original();
-			reshade::g_runtime_nfs->nfs_fe_passed = true;
 		}
 	}
 }
@@ -2916,9 +2902,8 @@ void __declspec(naked) ReShade_EntryPoint()
 {
 	_asm mov NFSUC_EntryPoint_EBX, ebx
 
-	ReShade_Hook(); // ✅ Calls `runtime::on_nfs_present()` internally
+	ReShade_Hook();
 
-	// Return to original flow
 	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
 		_asm jmp NFSUC_ExitPoint1
 	_asm jmp NFSUC_ExitPoint2

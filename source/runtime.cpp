@@ -523,7 +523,7 @@ bool reshade::runtime::on_init()
 		// 6. Reset tracking
 		_last_scene_resource = {};
 
-		// 7. Hook external RTV tracker
+		// 7. IOC Hook external RTV tracker
 		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
 			track_render_targets_if_external(count, rtvs);
 		};
@@ -736,8 +736,16 @@ void reshade::runtime::on_present()
 
 void reshade::runtime::on_present_original()
 {
-	if (nfs_fe_passed || !_is_initialized)
+	if(!_is_initialized)
 		return;
+
+#ifdef NFS_MULTITHREAD
+	if (nfs_fe_passed)
+	{
+		nfs_fe_passed = false;
+		return;
+	}
+#endif
 
 #if RESHADE_ADDON
 	_is_in_present_call = true;
