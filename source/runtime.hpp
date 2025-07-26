@@ -66,6 +66,7 @@ namespace reshade
 		bool on_init();
 		void on_reset();
 		void on_present();
+		void on_present_original();
 		void on_present_clean();
 		void bind_pre_fe_color_source();
 		void unbind_pre_fe_color_source();

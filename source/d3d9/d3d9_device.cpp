@@ -2842,8 +2842,6 @@ bool bGlobalMotionBlur = false;
 int NFSUC_MOTIONBLUR_ExitPointTrue = NFSUC_MOTIONBLUR_EXIT_TRUE;
 int NFSUC_MOTIONBLUR_ExitPointFalse = NFSUC_MOTIONBLUR_EXIT_FALSE;
 
-static uint64_t g_fe_frame_counter = 0;
-
 void __declspec(naked) MotionBlur_EntryPoint()
 {
 	if (!bGlobalMotionBlur)
@@ -2856,19 +2854,29 @@ void __declspec(naked) MotionBlur_EntryPoint()
 	}
 }
 #endif
-void __stdcall ReShade_Hook()
+
+void ReShade_Hook()
 {
-	if (reshade::runtime* runtime = reshade::g_runtime_nfs)
+	reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
+
+	g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
+	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr)
+		return;
+
+	// ✅ Run this BEFORE the frontend UI renders
+	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
 	{
-		reshade::log::message(reshade::log::level::debug, "🎯 FEManager_Render_Hook(): Entered. Frame=%llu", runtime->get_frame_count());
-		if (runtime->get_is_initialized() && !runtime->get_is_in_present_call())
+		g_pd3dDevice->rt_initialized_once = true;
+		reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu", reshade::g_runtime_nfs->get_frame_count());
+		if (reshade::g_runtime_nfs->get_is_initialized() && !reshade::g_runtime_nfs->get_is_in_present_call())
 		{
 #ifdef GAME_UC
-			bGlobalMotionBlur = runtime->bMotionBlur;
+			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
 #endif
-			g_force_fe_present_pass = true;
-			runtime->on_nfs_present();
-			g_force_fe_present_pass = false;
+			g_pd3dDevice->g_force_fe_present_pass = true;
+			// reshade::g_runtime_nfs->on_nfs_present();
+			reshade::g_runtime_nfs->on_present_original();
+			g_pd3dDevice->g_force_fe_present_pass = false;
 		}
 	}
 }
