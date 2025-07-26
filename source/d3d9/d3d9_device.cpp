@@ -2856,63 +2856,7 @@ void __declspec(naked) MotionBlur_EntryPoint()
 }
 #endif
 
-typedef HRESULT(APIENTRY *PresentFn)(IDirect3DDevice9 *, CONST RECT *, CONST RECT *, HWND, CONST RGNDATA *);
-PresentFn originalPresent = nullptr;
-
-// Hook D3D9 Present
-void InstallPresentHook(IDirect3DDevice9 *device)
-{
-	void **vtable = *reinterpret_cast<void ***>(device);
-	originalPresent = (PresentFn)vtable[17]; // vtable[17] = Present
-	MH_CreateHook(vtable[17], &HookedPresent, reinterpret_cast<void **>(&originalPresent));
-	MH_EnableHook(vtable[17]);
-}
-
-DWORD WINAPI InitThread(LPVOID)
-{
-	// Wait for the D3D9 device to be created by the game
-	while (!g_pd3dDevice)
-	{
-		g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS; // Replace with actual address
-		Sleep(100);
-	}
-
-	// Hook Present once the device is valid
-	if (!present_hook_installed)
-	{
-		InstallPresentHook(g_pd3dDevice);
-		present_hook_installed = true;
-	}
-
-	return 0;
-}
-
-HRESULT APIENTRY HookedPresent(IDirect3DDevice9 *device, CONST RECT *src, CONST RECT *dst, HWND hWnd, CONST RGNDATA *dirty)
-{
-	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
-	{
-		if (!reshade::g_runtime_nfs->get_is_in_present_call())
-		{
-			// ✅ Force last backbuffer to be what D3D9 is presenting right now
-			const reshade::api::resource backbuffer_resource =
-				reshade::g_runtime_nfs->get_device()->get_resource_from_view(
-					reshade::g_runtime_nfs->get_back_buffer_targets()[
-						reshade::g_runtime_nfs->get_swapchain()->get_current_back_buffer_index() * 2]);
-
-			reshade::g_runtime_nfs->_last_scene_resource = backbuffer_resource;
-
-			reshade::log::message(reshade::log::level::info,
-				"🎯 HookedPresent: Overriding backbuffer resource = %016llx", backbuffer_resource.handle);
-
-			reshade::g_runtime_nfs->on_nfs_present();
-		}
-	}
-
-	return originalPresent(device, src, dst, hWnd, dirty);
-}
-
-
-void ReShade_Hook()
+void _ReShade_Hook()
 {
 	reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
 
@@ -2930,6 +2874,61 @@ void ReShade_Hook()
 #ifdef GAME_UC
 			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
 #endif
+			g_pd3dDevice->g_force_fe_present_pass = true;
+			reshade::g_runtime_nfs->on_nfs_present();
+			g_pd3dDevice->g_force_fe_present_pass = false;
+		}
+	}
+}
+
+void ReShade_Hook()
+{
+	reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
+
+	g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr)
+		return;
+
+	// ✅ Run this BEFORE the frontend UI renders
+	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
+	{
+		g_pd3dDevice->rt_initialized_once = true;
+
+		reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu",
+		                      reshade::g_runtime_nfs->get_frame_count());
+
+		if (!reshade::g_runtime_nfs->get_is_in_present_call())
+		{
+#ifdef GAME_UC
+			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
+#endif
+			// 🔥 Grab game's actual scene render target before FE
+			IDirect3DSurface9* game_rt_surface = nullptr;
+			if (SUCCEEDED(g_pd3dDevice->GetRenderTarget(0, &game_rt_surface)) && game_rt_surface != nullptr)
+			{
+				reshade::api::resource scene_resource = {reinterpret_cast<uintptr_t>(game_rt_surface)};
+
+				reshade::g_runtime_nfs->_last_scene_resource = scene_resource;
+
+				reshade::g_runtime_nfs->get_device()->create_resource_view(
+					scene_resource,
+					reshade::api::resource_usage::shader_resource,
+					reshade::api::resource_view_desc(reshade::api::format::unknown),
+					&reshade::g_runtime_nfs->_effect_color_srv[0]);
+
+
+				reshade::log::message(reshade::log::level::info,
+				                      "✅ ReShade_Hook: Captured game RT = %016llx", scene_resource.handle);
+
+				game_rt_surface->Release(); // Release COM ref
+			}
+			else
+			{
+				reshade::log::message(reshade::log::level::warning,
+				                      "⚠️ ReShade_Hook: Failed to get game render target.");
+			}
+
+			// 🔁 Now render effects BEFORE the frontend
 			g_pd3dDevice->g_force_fe_present_pass = true;
 			reshade::g_runtime_nfs->on_nfs_present();
 			g_pd3dDevice->g_force_fe_present_pass = false;

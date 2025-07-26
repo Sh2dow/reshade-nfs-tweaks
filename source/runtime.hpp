@@ -217,20 +217,13 @@ namespace reshade
 
 		// NFS Stuff
 		api::resource_view _orig_color_srv[2] = {};
-		api::resource_view _orig_color_rtv[2] = {};
-
 		api::resource_view _effect_color_srv[2] = {};
-		api::resource_view _effect_color_rtv[2] = {};
-
-		bool _app_state_captured_this_frame;
+		api::resource _last_scene_resource = {};
 		uint32_t _back_buffer_index_this_frame = 0;
 
-		std::array<api::resource_view, 8> _last_bound_rtvs;
-		uint32_t _last_bound_rtv_count = 0;
-		api::resource_view _last_bound_rtv = {};
+		bool _app_state_captured_this_frame;
 
-		api::resource_view _last_scene_rtv = {};
-		api::resource _last_scene_resource = {};
+		std::array<api::resource_view, 8> _last_bound_rtvs;
 
 		bool _effects_rendered_per_frame[3] = {}; // assume triple buffering
 		// api::resource game_backbuffer = _device->get_resource_from_view(_back_buffer_targets[_back_buffer_resolved != 0 ? 2 : 0 + _swapchain->get_current_back_buffer_index * 2]);
@@ -258,11 +251,11 @@ namespace reshade
 
 		// Input backbuffer copy
 		api::resource _scene_texture_input = {};
-		api::resource_view _scene_srv = {};
+		api::resource_view _scene_texture_input_srv = {};
 
 		// Offscreen target for rendering
 		api::resource _scene_texture_output = {};
-		api::resource_view _scene_rtv = {};
+		api::resource_view _scene_texture_output_rtv = {};
 
 		// Optional depth (if you plan to expand)
 		api::resource_view _scene_depth_texture = {};

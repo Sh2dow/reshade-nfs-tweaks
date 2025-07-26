@@ -188,7 +188,7 @@ typedef void(__thiscall* FEManagerRenderFn)(void* ThisFE);
 
 // Extern declaration for the global function pointer
 extern FEManagerRenderFn FEManager_Render_Original;
-void __stdcall FEManager_Render_Hook(void* ThisFE);
+void FEManager_Render_Hook();
 void ReShade_GameHookEntry();
 void ReShade_EntryPoint();
 void __stdcall MainService_Hook();
