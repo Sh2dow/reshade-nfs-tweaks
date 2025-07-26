@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "d3d9_impl_state_block.hpp"
 #include "reshade_api_object_impl.hpp"
 
@@ -14,13 +16,11 @@ namespace reshade::d3d9
 	{
 	public:
 #ifdef GAME_UC
-		reshade::api::resource_view _last_render_targets[8] = {};
+		api::resource_view _last_render_targets[8] = {};
 		uint32_t _last_render_target_count = 0;
-		reshade::api::resource_view _last_known_backbuffer = {};
+		api::resource_view _last_known_backbuffer = {};
 
-		void track_render_targets_if_external(uint32_t count, const reshade::api::resource_view* rtvs,
-		                                      reshade::api::resource_view exclude_rtv = {0});
-
+		std::function<void(uint32_t, const reshade::api::resource_view *)> rtv_tracker = nullptr;
 #endif
 
 		explicit device_impl(IDirect3DDevice9* device);

@@ -2876,13 +2876,24 @@ void __stdcall ReShade_Hook()
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
-
 bool hook_installed = false;
+
+int sub_831FA0 = 0x00831FA0; // FEManager::Render
+int sub_77E320 = 0x007AE61B; // address after original 'call sub_831FA0'
 
 void __declspec(naked) ReShade_EntryPoint()
 {
 	_asm mov NFSUC_EntryPoint_EBX, ebx
-	ReShade_Hook();
+
+	// Log before
+	reshade::log::message(reshade::log::level::info, "🟡 ReShade_EntryPoint: Before calling ReShade_Hook");
+
+	ReShade_Hook(); // ✅ Calls `runtime::on_nfs_present()` internally
+
+	// Log after
+	reshade::log::message(reshade::log::level::info, "🟢 ReShade_EntryPoint: After ReShade_Hook");
+
+	// Return to original flow
 	if (*(bool*)(NFSUC_EntryPoint_EBX + 0xA))
 		_asm jmp NFSUC_ExitPoint1
 	_asm jmp NFSUC_ExitPoint2

@@ -36,6 +36,9 @@
 #include <d3dcompiler.h>
 #include <sk_hdr_png.hpp>
 
+#include "d3d9/d3d9_device.hpp"
+#include "d3d9/d3d9_impl_device.hpp"
+
 bool resolve_path(std::filesystem::path &path, std::error_code &ec)
 {
 	// First convert path to an absolute path
@@ -496,22 +499,29 @@ bool reshade::runtime::on_init()
 				static_cast<uint32_t>(actual_desc.usage));
 		}
 
-		// 4. Create dedicated effect render target (_scene_texture)
-		if (_scene_texture.handle == 0)
+		// 4. Create dedicated effect render target (_scene_texture_output)
+		if (_scene_texture_output.handle == 0)
 		{
 			api::resource_desc scene_desc = output_desc;
-			scene_desc.usage = reshade::api::resource_usage::render_target | reshade::api::resource_usage::copy_source;
+			scene_desc.usage =
+				api::resource_usage::render_target |
+				api::resource_usage::copy_source |
+				api::resource_usage::shader_resource;
 
-			if (!_device->create_resource(scene_desc, nullptr, reshade::api::resource_usage::render_target, &_scene_texture))
+			if (!_device->create_resource(scene_desc, nullptr, reshade::api::resource_usage::render_target, &_scene_texture_output))
 			{
-				log::message(log::level::error, "on_init(): ❌ Failed to create _scene_texture!");
+				log::message(log::level::error, "on_init(): ❌ Failed to create _scene_texture_output!");
 				goto exit_failure;
 			}
 			else
 			{
-				log::message(log::level::debug, "on_init(): ✅ Created _scene_texture = %p", (void *)_scene_texture.handle);
+				log::message(log::level::debug, "on_init(): ✅ Created _scene_texture_output = %p", (void*)_scene_texture_output.handle);
 			}
 		}
+
+		auto out_desc = _device->get_resource_desc(_scene_texture_output);
+		reshade::log::message(log::level::info, "_scene_texture_output usage flags = 0x%X", static_cast<uint32_t>(out_desc.usage));
+
 
 		// 5. ✅ Always recreate _scene_rtv
 		if (_scene_rtv.handle != 0)
@@ -531,6 +541,12 @@ bool reshade::runtime::on_init()
 		_orig_color_srv[2] = {};
 		_orig_color_rtv[2] = {};
 		_last_bound_rtv_count = 0;
+
+		// 6. Pass-through via a shared callback - ➡️ This avoids a direct call to runtime from device_impl — inversion of control.
+		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
+			track_render_targets_if_external(count, rtvs);
+		};
+
 	}
 
 
@@ -699,6 +715,64 @@ void reshade::runtime::on_reset()
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
 
+bool reshade::runtime::capture_texture_dds(reshade::api::device *device,
+                         reshade::api::command_list *cmd_list,
+                         reshade::api::resource texture,
+                         reshade::api::format format,
+                         uint32_t width,
+                         uint32_t height,
+                         const char *filename)
+{
+    using namespace reshade;
+
+    api::resource_desc desc = device->get_resource_desc(texture);
+
+    // Create a CPU-readable texture
+    api::resource readback_texture = {};
+	if (!device->create_resource(api::resource_desc(desc.type, width, height, 1, 1, format, 1, api::memory_heap::cpu_to_gpu, api::resource_usage::cpu_access), nullptr, api::resource_usage::cpu_access, &readback_texture))
+    {
+        log::message(log::level::error, "❌ Failed to create readback texture");
+        return false;
+    }
+
+    // Issue copy
+    cmd_list->barrier(texture, api::resource_usage::shader_resource, api::resource_usage::copy_source);
+    cmd_list->copy_texture_region(readback_texture, 0, nullptr, texture, 0, nullptr);
+
+    // Flush
+	// device->flush_immediate_command_list();
+	_graphics_queue->flush_immediate_command_list();
+
+    // Map for CPU read
+    api::subresource_data mapped_data = {};
+	if (!device->map_texture_region(readback_texture, 0, nullptr, api::map_access::read_only, &mapped_data))
+    {
+        log::message(log::level::error, "❌ Failed to map texture for readback");
+        device->destroy_resource(readback_texture);
+        return false;
+    }
+
+    // Save raw dump (simple 32-bit RGBA)
+    FILE *fp = fopen(filename, "wb");
+    if (!fp)
+    {
+        log::message(log::level::error, "❌ Failed to open file for writing: %s", filename);
+        device->unmap_texture_region(readback_texture, 0);
+        device->destroy_resource(readback_texture);
+        return false;
+    }
+
+    fwrite(mapped_data.data, 1, mapped_data.row_pitch * height, fp);
+    fclose(fp);
+
+    log::message(log::level::info, "📷 Texture captured to %s", filename);
+
+    // Cleanup
+    device->unmap_texture_region(readback_texture, 0);
+    device->destroy_resource(readback_texture);
+    return true;
+}
+
 const float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 static uint64_t g_fe_frame_counter = 0;
 
@@ -708,23 +782,59 @@ void reshade::runtime::bind_pre_fe_color_source()
 	_orig_color_srv[0] = _effect_color_srv[0];
 	_orig_color_srv[1] = _effect_color_srv[1];
 
-	// Point COLOR semantic to our pre-HUD copy
+	// Override COLOR semantic to our pre-HUD texture
 	_effect_color_srv[0] = _scene_srv;
 	_effect_color_srv[1] = _scene_srv; // fine for ping-pong-less 1-pass
+
 	// If your runtime has _texture_semantic_bindings map, update that too:
-	_texture_semantic_bindings["COLOR"] = { _scene_srv, _scene_srv };
+	if (!_texture_semantic_bindings.empty())
+		_texture_semantic_bindings["COLOR"] = { _scene_srv, _scene_srv };
 }
 
 void reshade::runtime::unbind_pre_fe_color_source()
- {
- 	_effect_color_srv[0] = _orig_color_srv[0];
- 	_effect_color_srv[1] = _orig_color_srv[1];
- 	// Restore map if you changed it
- }
+{
+	_effect_color_srv[0] = _orig_color_srv[0];
+	_effect_color_srv[1] = _orig_color_srv[1];
+
+	// Restore map if you changed it
+	if (!_texture_semantic_bindings.empty())
+		_texture_semantic_bindings["COLOR"] = { _orig_color_srv[0], _orig_color_srv[1] };
+}
+
+void reshade::runtime::track_render_targets_if_external(uint32_t count, const reshade::api::resource_view *rtvs)
+{
+	if (count == 0 || rtvs == nullptr || rtvs[0].handle == 0)
+		return;
+
+	api::resource scene_res = _device->get_resource_from_view(rtvs[0]);
+
+	// Avoid tracking same resource (no-op)
+	if (_last_scene_resource == scene_res)
+		return;
+
+	// Optionally skip typeless or very small buffers (edge case safety)
+	api::resource_desc desc = _device->get_resource_desc(scene_res);
+	if (desc.texture.width < 16 || desc.texture.height < 16)
+		return;
+
+	_last_scene_rtv = rtvs[0];
+	_last_scene_resource = scene_res;
+
+	reshade::log::message(log::level::debug,
+		"🎯 Tracked external RTV: %016llx → resource: %016llx (%ux%u)",
+		rtvs[0].handle,
+		scene_res.handle,
+		desc.texture.width,
+		desc.texture.height);
+}
 
 void reshade::runtime::on_nfs_present()
 {
-	if (!_is_initialized || !_effects_enabled || _techniques.empty() || is_loading())
+	if (!_is_initialized || !_effects_enabled || is_loading())
+		return;
+
+	// 🚫 All techniques disabled? Don't render/composite.
+	if (std::none_of(_techniques.begin(), _techniques.end(), [](const technique &t) { return t.enabled; }))
 		return;
 
 #if RESHADE_ADDON
@@ -735,35 +845,73 @@ void reshade::runtime::on_nfs_present()
 	if (cmd_list == nullptr)
 		return;
 
+	// 💾 Save app state (once)
+	capture_state(cmd_list, _app_state);
+
+	// Lock input so it cannot be modified by other threads while we are reading it here
+	std::unique_lock<std::recursive_mutex> input_lock;
+	if (_input != nullptr)
+		input_lock = _input->lock();
+
+	update_effects();
+
 	_current_time = std::chrono::system_clock::now();
 
-	// _effects_rendered_this_frame = false;
 	// PATCH
 	// 🔁 Get last active render target tracked via bind_render_targets_and_depth_stencil
 
-	// uint32_t back_buffer_index = _swapchain->get_current_back_buffer_index();
-	uint32_t target_index = (_frame_count + 1) % _swapchain->get_back_buffer_count(); // one ahead
 
-	api::resource_view final_backbuffer_rtv = _back_buffer_targets[target_index * 2];
-	api::resource final_back_buffer = _device->get_resource_from_view(final_backbuffer_rtv);
+	if (!_last_scene_resource.handle || !_last_scene_rtv.handle)
+	{
+		log::message(log::level::warning, "❌ No tracked scene resource — FE hasn't bound a render target yet.");
+		return;
+	}
 
-	if (!final_backbuffer_rtv.handle)
+	// uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
+
+	// const uint32_t back_buffer_index = _swapchain->get_current_back_buffer_index() * 2;
+	// const api::resource_view backbuffer_rtv = _back_buffer_targets[back_buffer_index];
+	// const api::resource back_buffer_resource = _device->get_resource_from_view(backbuffer_rtv);
+
+	const api::resource_view backbuffer_rtv = _last_scene_rtv;
+	const api::resource back_buffer_resource = _last_scene_resource;
+
+
+	// reshade::log::message(log::level::info, "back_buffer_index = %u", back_buffer_index);
+
+	reshade::log::message(log::level::info, "✅ on_nfs_present(): Real backbuffer RTV = %016llx, resource = %016llx",
+						  backbuffer_rtv.handle, back_buffer_resource.handle);
+
+	if (!backbuffer_rtv.handle)
 	{
 		reshade::log::message(log::level::warning, "❌ No tracked render target for FE present pass");
 		return;
 	}
-	reshade::log::message(log::level::info, "🟩 on_nfs_present(): Target buffer index %u → RTV = %016" PRIx64,
-	                      target_index, final_backbuffer_rtv.handle);
 
-	// 💾 Save app state (once)
-	capture_state(cmd_list, _app_state);
+	if (_frame_count % 100 == 0)
+	{
+		char filename[64];
+		snprintf(filename, sizeof(filename), "debug_final_backbuffer_%llu.dds", _frame_count);
+		capture_texture_dds(_device, cmd_list, back_buffer_resource, api::format::r8g8b8a8_unorm, _width, _height, filename);
+		// snprintf(filename, sizeof(filename), "debug_final_backbuffer_srgb_%llu.dds", _frame_count);
+		// capture_texture_dds(_device, cmd_list, final_back_buffer, api::format::b8g8r8a8_unorm_srgb, _width, _height, filename);
+	}
 
 	// 🔁 Copy backbuffer → _scene_texture_input
-	cmd_list->barrier(final_back_buffer, api::resource_usage::present, api::resource_usage::copy_source);
+
+	// 1. Transition usages
+	cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::copy_source);
 	cmd_list->barrier(_scene_texture_input, api::resource_usage::undefined, api::resource_usage::copy_dest);
-	cmd_list->copy_resource(_scene_texture_input, final_back_buffer);
-	cmd_list->barrier(final_back_buffer, api::resource_usage::copy_source, api::resource_usage::present);
+
+	// 2. Copy the contents
+	cmd_list->copy_resource(_scene_texture_input, back_buffer_resource);
+
+	// 3. Transition back
+	cmd_list->barrier(back_buffer_resource, api::resource_usage::copy_source, api::resource_usage::present);
 	cmd_list->barrier(_scene_texture_input, api::resource_usage::copy_dest, api::resource_usage::shader_resource);
+
+	// 5. Flush GPU before mapping
+	_graphics_queue->flush_immediate_command_list();
 
 	// 🎯 Prebind input texture to COLOR uniform
 	bind_pre_fe_color_source();
@@ -772,30 +920,39 @@ void reshade::runtime::on_nfs_present()
 	cmd_list->barrier(_scene_texture_output, api::resource_usage::shader_resource, api::resource_usage::render_target);
 	cmd_list->bind_render_targets_and_depth_stencil(1, &_scene_rtv);
 
-	// 🔴 Temporarily disable HUD
-	bool* drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
-	const bool oldDrawHUD = *drawHUDAddr;
-	*drawHUDAddr = false;
+	reshade::log::message(log::level::info, "🔧 Bound _scene_rtv = %016" PRIx64, _scene_rtv.handle);
+
+	float red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+	cmd_list->clear_render_target_view(_scene_rtv, red);
 
 	render_effects(cmd_list, _scene_rtv, _scene_rtv);
-	// _effects_rendered_this_frame = true;
 
-	// 🔁 Composite effect result to final backbuffer
-	cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
-	cmd_list->barrier(final_back_buffer, api::resource_usage::present, api::resource_usage::copy_dest);
-	cmd_list->copy_resource(final_back_buffer, _scene_texture_output);
-	cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::shader_resource);
-	cmd_list->barrier(final_back_buffer, api::resource_usage::copy_dest, api::resource_usage::present);
+	api::resource_desc desc = _device->get_resource_desc(back_buffer_resource);
+	reshade::log::message(log::level::info, "Backbuffer format = %d", static_cast<int>(desc.texture.format));
 
-	reshade::log::message(log::level::info,
-							  "🟩 on_nfs_present(): Composited _scene_texture_output (%016" PRIx64 ") into final backbuffer (%016"
-							  PRIx64
-							  ")",
-							  _scene_texture_output.handle, final_back_buffer.handle);
+	desc = _device->get_resource_desc(_scene_texture_output);
+	reshade::log::message(log::level::info, "_scene_texture_output format = %d", static_cast<int>(desc.texture.format));
+
+	if (_effects_rendered_this_frame && _scene_texture_output.handle != 0)
+	{
+		// 🔁 Composite effect result to final backbuffer
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
+		cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::copy_dest);
+
+		_graphics_queue->flush_immediate_command_list();
+
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::shader_resource);
+		cmd_list->barrier(back_buffer_resource, api::resource_usage::copy_dest, api::resource_usage::present);
+
+		reshade::log::message(log::level::info,
+								  "🟩 on_nfs_present(): Composited _scene_texture_output (%016" PRIx64 ") into final backbuffer (%016"
+								  PRIx64
+								  ")",
+								  _scene_texture_output.handle, back_buffer_resource.handle);
+	}
 
 	// ✅ Restore game state
 	unbind_pre_fe_color_source();
-	*drawHUDAddr = oldDrawHUD;
 
 	apply_state(cmd_list, _app_state);
 
@@ -803,11 +960,18 @@ void reshade::runtime::on_nfs_present()
 	_is_in_present_call = false;
 #endif
 
-	_nfs_backbuffer_snapshot = final_back_buffer;
+	_nfs_scene_ready = true;
+	_nfs_backbuffer_snapshot = back_buffer_resource;
+
+	reshade::log::message(log::level::info,
+	"✅ on_nfs_present(): Snapshot = %016" PRIx64 ", back_buffer = %016" PRIx64,
+	_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+
 	reshade::log::message(log::level::debug,
 	                      "on_nfs_present(): EXIT — start frame %llu, _effects_rendered_this_frame = %d",
 	                      _frame_count, _effects_rendered_this_frame);
 }
+
 void reshade::runtime::on_present()
 {
 
@@ -816,8 +980,10 @@ void reshade::runtime::on_present()
 	on_present_clean();
 	reshade::log::message(log::level::debug, "on_present(): EXIT — _effects_rendered_this_frame = %d",
 		                      _effects_rendered_this_frame);
-	_app_state_captured_this_frame = false;
 	// _effects_rendered_this_frame = false;
+
+	_app_state_captured_this_frame = false;
+	_nfs_scene_ready = false;
 	_nfs_backbuffer_snapshot.handle = 0;
 }
 
@@ -834,8 +1000,12 @@ void reshade::runtime::on_present_clean()
 
 	capture_state(cmd_list, _app_state);
 
+	// const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+
+	// const uint32_t back_buffer_index = _swapchain->get_current_back_buffer_index() * 2;
 	uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
-	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+	const api::resource_view backbuffer_rtv = _back_buffer_targets[back_buffer_index];
+	const api::resource back_buffer_resource = _device->get_resource_from_view(backbuffer_rtv);
 
 	// Resolve MSAA back buffer if MSAA is active or copy when format conversion is required
 	if (_back_buffer_resolved != 0 && !_effects_rendered_this_frame)
@@ -1054,9 +1224,12 @@ void reshade::runtime::on_present_clean()
 	// Stretch main render target back into MSAA back buffer if MSAA is active or copy when format conversion is required
 	bool skipStretchMSAABB = false;
 #ifdef GAME_UC
-	api::resource current_backbuffer = back_buffer_resource;
 
-	if (_effects_rendered_this_frame && _nfs_backbuffer_snapshot == current_backbuffer)
+	reshade::log::message(log::level::info,
+	"✅ on_present_clean: Snapshot = %016" PRIx64 ", back_buffer = %016" PRIx64,
+	_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+
+	if (_effects_rendered_this_frame && _nfs_backbuffer_snapshot == back_buffer_resource)
 	{
 		// ❌ Skip this entire block, already copied _scene_texture_output
 		reshade::log::message(log::level::info,
@@ -1124,42 +1297,55 @@ void reshade::runtime::on_present_clean()
 #endif
 
 
-	// After all ReShade UI, screenshots, input, etc.
-	back_buffer_index = _swapchain->get_current_back_buffer_index() * 2;
-	const api::resource final_back_buffer = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+	// ✅ NEW: Deferred composite after FE
+	if (_nfs_scene_ready && !_effects_rendered_this_frame && _nfs_backbuffer_snapshot.handle != 0)
+	{
+		cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::shader_resource, api::resource_usage::copy_source);
+		cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::copy_dest);
+		cmd_list->copy_resource(back_buffer_resource, _nfs_backbuffer_snapshot);
+		cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::copy_source, api::resource_usage::shader_resource);
+		cmd_list->barrier(back_buffer_resource, api::resource_usage::copy_dest, api::resource_usage::present);
+
+		_effects_rendered_this_frame = true;
+		_nfs_scene_ready = false;
+
+		reshade::log::message(log::level::info,
+			"✅ Deferred composite: _scene_texture_output (%016" PRIx64 ") → final backbuffer (%016" PRIx64 ")",
+			_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+	}
 
 	// Composite
-#ifdef GAME_UC
-	if (_effects_rendered_this_frame &&
-		_scene_texture_output.handle != 0 &&
-		_nfs_backbuffer_snapshot != final_back_buffer)
-#else
-	if (_effects_rendered_this_frame && _scene_texture_output.handle != 0)
-#endif
-	{
-		// Make sure barriers are correct
-		cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
-		cmd_list->barrier(final_back_buffer, api::resource_usage::render_target, api::resource_usage::copy_dest);
-		cmd_list->copy_resource(final_back_buffer, _scene_texture_output);
-		cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::render_target);
-		cmd_list->barrier(final_back_buffer, api::resource_usage::copy_dest, api::resource_usage::present);
-
-		reshade::log::message(log::level::info,
-							  "🟩 on_present_clean(): Composited _scene_texture_output (%016" PRIx64 ") into final backbuffer (%016" PRIx64 ")",
-							  _scene_texture_output.handle, final_back_buffer.handle);
-	}
-#ifdef GAME_UC
-	else if (_effects_rendered_this_frame)
-	{
-		reshade::log::message(log::level::info,
-							  "⚠️ Skipped final composite — already composited in on_nfs_present to backbuffer (%016" PRIx64 ")",
-							  final_back_buffer.handle);
-	}
-#endif
+// #ifdef GAME_UC
+// 	if (_effects_rendered_this_frame &&
+// 		_scene_texture_output.handle != 0 &&
+// 		_nfs_backbuffer_snapshot != final_back_buffer)
+// #else
+// 	if (_effects_rendered_this_frame && _scene_texture_output.handle != 0)
+// #endif
+// 	{
+// 		// Make sure barriers are correct
+// 		cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
+// 		cmd_list->barrier(final_back_buffer, api::resource_usage::render_target, api::resource_usage::copy_dest);
+// 		cmd_list->copy_resource(final_back_buffer, _scene_texture_output);
+// 		cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::render_target);
+// 		cmd_list->barrier(final_back_buffer, api::resource_usage::copy_dest, api::resource_usage::present);
+//
+// 		reshade::log::message(log::level::info,
+// 							  "🟩 on_present_clean(): Composited _scene_texture_output (%016" PRIx64 ") into final backbuffer (%016" PRIx64 ")",
+// 							  _scene_texture_output.handle, final_back_buffer.handle);
+// 	}
+// #ifdef GAME_UC
+// 	else if (_effects_rendered_this_frame)
+// 	{
+// 		reshade::log::message(log::level::info,
+// 							  "⚠️ Skipped final composite — already composited in on_nfs_present to backbuffer (%016" PRIx64 ")",
+// 							  final_back_buffer.handle);
+// 	}
+// #endif
 
 
 	reshade::log::message(log::level::info,
-		"✅ on_present_clean(): Final back buffer = %08X", final_back_buffer.handle);
+		"✅ on_present_clean(): Final back buffer = %08X", back_buffer_resource.handle);
 
 	apply_state(cmd_list, _app_state);
 

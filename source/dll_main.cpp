@@ -369,6 +369,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 
 #ifdef NFS_MULTITHREAD
 			injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+			// injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR2, ReShade_EntryPoint, true);
 			injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
 #else
 #ifdef NFS_MULTITHREAD

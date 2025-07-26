@@ -69,7 +69,12 @@ namespace reshade
 		void on_present_clean();
 		void bind_pre_fe_color_source();
 		void unbind_pre_fe_color_source();
-		void _on_nfs_present();
+		bool capture_texture_dds(reshade::api::device* device, reshade::api::command_list* cmd_list,
+		                         reshade::api::resource texture, reshade::api::format format, uint32_t width,
+		                         uint32_t height,
+		                         const char* filename);
+		void bind_render_targets_and_depth_stencil(uint32_t count, const reshade::api::resource_view* rtvs,
+		                                           reshade::api::resource_view dsv);
 		uint32_t get_current_back_buffer_target_index() const;
 		void on_nfs_present();
 
@@ -207,7 +212,7 @@ namespace reshade
 		void set_color_space(api::color_space color_space) final;
 
 		void reload_effect_next_frame(const char *effect_name) final;
-
+		void track_render_targets_if_external(uint32_t count, const api::resource_view* rtvs);
 
 		// NFS Stuff
 		api::resource_view _orig_color_srv[2] = {};
@@ -223,10 +228,15 @@ namespace reshade
 		uint32_t _last_bound_rtv_count = 0;
 		api::resource_view _last_bound_rtv = {};
 
+		api::resource_view _last_scene_rtv = {};
+		api::resource _last_scene_resource = {};
+
 		bool _effects_rendered_per_frame[3] = {}; // assume triple buffering
 		// api::resource game_backbuffer = _device->get_resource_from_view(_back_buffer_targets[_back_buffer_resolved != 0 ? 2 : 0 + _swapchain->get_current_back_buffer_index * 2]);
 		std::vector<api::resource_view> get_back_buffer_targets() { return _back_buffer_targets; }
 		api::resource get_back_buffer_resolved() { return  _back_buffer_resolved; }
+
+		bool _nfs_scene_ready;
 		api::resource _nfs_backbuffer_snapshot = {};
 		// size_t get_technique_count() const { return _techniques.size(); }
 		void wrapped_update_effects() { update_effects(); }
