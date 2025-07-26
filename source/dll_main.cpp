@@ -10,6 +10,8 @@
 #include "addon_manager.hpp"
 #include <Windows.h>
 #include <Psapi.h>
+
+#include "d3d9/d3d9_device.hpp"
 #ifndef NDEBUG
 #include <DbgHelp.h>
 
@@ -368,8 +370,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 			// NFS INJECTION
 
 #ifdef NFS_MULTITHREAD
-			injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+			// injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
 			// injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR2, ReShade_EntryPoint, true);
+			CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
 			injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
 #else
 #ifdef NFS_MULTITHREAD

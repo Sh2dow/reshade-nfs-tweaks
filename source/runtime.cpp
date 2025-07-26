@@ -839,107 +839,107 @@ void reshade::runtime::on_nfs_present()
 	if (!_is_initialized || !_effects_enabled || is_loading())
 		return;
 
-	// 🚫 All techniques disabled? Don't render/composite.
-	if (std::none_of(_techniques.begin(), _techniques.end(), [](const technique &t) { return t.enabled; }))
-		return;
-
-#if RESHADE_ADDON
-	_is_in_present_call = true;
-#endif
-
 	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
-	if (cmd_list == nullptr)
-		return;
 
-	// 💾 Save app state (once)
 	capture_state(cmd_list, _app_state);
 
-	// Lock input so it cannot be modified by other threads while we are reading it here
+	uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
+	const api::resource_view present_rtv = _back_buffer_targets[back_buffer_index];
+	const api::resource present_resource = _device->get_resource_from_view(present_rtv);
+
+	// Resolve MSAA or copy to intermediate texture
+	if (_back_buffer_resolved != 0)
+	{
+		if (_back_buffer_samples == 1)
+		{
+			cmd_list->barrier(present_resource, api::resource_usage::present, api::resource_usage::copy_source);
+			cmd_list->copy_texture_region(present_resource, 0, nullptr, _back_buffer_resolved, 0, nullptr);
+			cmd_list->barrier(_back_buffer_resolved, api::resource_usage::copy_dest, api::resource_usage::render_target);
+		}
+		else
+		{
+			cmd_list->barrier(present_resource, api::resource_usage::present, api::resource_usage::resolve_source);
+			cmd_list->resolve_texture_region(present_resource, 0, nullptr, _back_buffer_resolved, 0, 0, 0, 0, _back_buffer_format);
+			cmd_list->barrier(_back_buffer_resolved, api::resource_usage::resolve_dest, api::resource_usage::render_target);
+		}
+	}
+
 	std::unique_lock<std::recursive_mutex> input_lock;
 	if (_input != nullptr)
 		input_lock = _input->lock();
 
-	update_effects();
-	_current_time = std::chrono::system_clock::now();
+	if (_should_save_screenshot && _screenshot_save_before && !_effects_rendered_this_frame)
+		save_screenshot("Before");
 
-	// 🔁 Always use the render target the FE just bound
-	const api::resource       final_back_buffer   = _last_scene_resource;
-	const api::resource_view  final_backbuffer_rtv = _last_scene_rtv;
-
-	if (!final_back_buffer.handle || !final_backbuffer_rtv.handle)
+	// ✅ Render effects into scene output (not directly into game's RT)
+	if (!is_loading() && !_techniques.empty())
 	{
-		log::message(log::level::warning, "❌ No tracked scene resource/RTV — FE hasn't bound a render target yet.");
-		return;
-	}
+		// Resolve or presentable resource to sample from
+		const api::resource input_res = _back_buffer_resolved != 0 ? _back_buffer_resolved : present_resource;
 
-	reshade::log::message(log::level::info,
-	                      "✅ on_nfs_present(): FE backbuffer RTV = %016" PRIx64 ", resource = %016" PRIx64,
-	                      final_backbuffer_rtv.handle, final_back_buffer.handle);
+		// input_res is of type api::resource (from earlier in your code)
 
-	// 🔁 Copy FE backbuffer → _scene_texture_input
-	cmd_list->barrier(final_back_buffer, api::resource_usage::render_target, api::resource_usage::copy_source);
-	cmd_list->barrier(_scene_texture_input, api::resource_usage::undefined, api::resource_usage::copy_dest);
-	cmd_list->copy_resource(_scene_texture_input, final_back_buffer);
-	cmd_list->barrier(final_back_buffer, api::resource_usage::copy_source, api::resource_usage::render_target);
-	cmd_list->barrier(_scene_texture_input, api::resource_usage::copy_dest, api::resource_usage::shader_resource);
+		// Create shader resource view (SRV) from input_res
+		_device->create_resource_view(
+			input_res,
+			api::resource_usage::shader_resource,
+			api::resource_view_desc(api::format::unknown),
+			&_scene_srv); // ✅ CORRECT: _scene_srv is a resource_view
 
-	// 5. Flush GPU before mapping
-	_graphics_queue->flush_immediate_command_list();
+		// Create render target view (RTV) from input_res
+		_device->create_resource_view(
+			input_res,
+			api::resource_usage::render_target,
+			api::resource_view_desc(api::format::unknown),
+			&_last_scene_rtv); // ✅ CORRECT: _last_scene_rtv is a resource_view
 
-	// 🎯 Pre‑bind input texture to COLOR uniform
-	bind_pre_fe_color_source();
+		// Transition resources
+		cmd_list->barrier(input_res, api::resource_usage::present, api::resource_usage::shader_resource);
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::undefined, api::resource_usage::render_target);
 
-	// 🟢 Render effects → _scene_texture_output
-	cmd_list->barrier(_scene_texture_output, api::resource_usage::shader_resource, api::resource_usage::render_target);
-	cmd_list->bind_render_targets_and_depth_stencil(1, &_scene_rtv);
+		// ✅ Run effects using input SRV and dummy RTV as depth
+		render_effects(cmd_list, _last_scene_rtv, _last_scene_rtv);
 
-	float clear_color[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
-	cmd_list->clear_render_target_view(_scene_rtv, clear_color);
-
-	render_effects(cmd_list, _scene_rtv, _scene_rtv);
-
-	if (_effects_rendered_this_frame && _scene_texture_output.handle != 0)
-	{
-		// 🔁 Composite effect result → FE backbuffer
 		cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
-		cmd_list->barrier(final_back_buffer, api::resource_usage::render_target, api::resource_usage::copy_dest);
+		cmd_list->barrier(present_resource, api::resource_usage::present, api::resource_usage::copy_dest);
 
-		_graphics_queue->flush_immediate_command_list();
-
-		cmd_list->copy_resource(final_back_buffer, _scene_texture_output);
+		// ✅ Composite result into presentable back buffer
+		cmd_list->copy_texture_region(present_resource, 0, nullptr, _scene_texture_output, 0, nullptr);
 
 		cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::shader_resource);
-		cmd_list->barrier(final_back_buffer, api::resource_usage::copy_dest, api::resource_usage::render_target);
-
-		reshade::log::message(log::level::info,
-		                      "🟩 on_nfs_present(): Composited _scene_texture_output (%016" PRIx64 ") into FE backbuffer (%016" PRIx64 ")",
-		                      _scene_texture_output.handle, final_back_buffer.handle);
+		cmd_list->barrier(present_resource, api::resource_usage::copy_dest, api::resource_usage::present);
 	}
 
-	// ✅ Restore game state
-	unbind_pre_fe_color_source();
+
+	// Restore app pipeline state
 	apply_state(cmd_list, _app_state);
 
-#if RESHADE_ADDON
-	_is_in_present_call = false;
-#endif
+	// ✅ Save snapshot for on_present_clean()
+	_nfs_backbuffer_snapshot = present_resource;
+	_nfs_scene_ready = true;
 
-	_nfs_scene_ready        = true;
-	_nfs_backbuffer_snapshot = final_back_buffer;
+    // ✅ Before using _nfs_backbuffer_snapshot to composite:
+	// if (_nfs_scene_ready && _nfs_backbuffer_snapshot.handle != back_buffer_resource.handle)
+	// {
+	// 	reshade::log::message(log::level::warning,
+	// 		"⚠️ Snapshot FE buffer (%016llx) does not match present backbuffer (%016llx) — overriding snapshot",
+	// 		_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+	//
+	// 	_nfs_backbuffer_snapshot = back_buffer_resource;
+	// }
 
 	reshade::log::message(log::level::info,
-	                      "✅ on_nfs_present(): Snapshot = %016" PRIx64 ", final_back_buffer = %016" PRIx64,
-	                      _nfs_backbuffer_snapshot.handle, final_back_buffer.handle);
+		"✅ on_nfs_present(): Snapshot = %016" PRIx64 ", final_back_buffer = %016" PRIx64,
+		_nfs_backbuffer_snapshot.handle, present_resource.handle);
 
 	reshade::log::message(log::level::debug,
-	                      "on_nfs_present(): EXIT — start frame %llu, _effects_rendered_this_frame = %d",
-	                      _frame_count, _effects_rendered_this_frame);
+		"on_nfs_present(): EXIT — start frame %llu, _effects_rendered_this_frame = %d",
+		_frame_count, _effects_rendered_this_frame);
 }
 
 
 void reshade::runtime::on_present()
 {
-
 	// _effects_rendered_this_frame = false;
 	reshade::log::message(log::level::debug, "on_present(): start frame %llu", _frame_count);
 	on_present_clean();
@@ -971,7 +971,9 @@ void reshade::runtime::on_present_clean()
 	// const api::resource_view backbuffer_rtv = _back_buffer_targets[back_buffer_index];
 	// const api::resource back_buffer_resource = _device->get_resource_from_view(backbuffer_rtv);
 
-	const api::resource back_buffer_resource = _last_scene_resource.handle != 0 ? _last_scene_resource : _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]); // the one FE bound
+	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+
+	// const api::resource back_buffer_resource = _last_scene_resource.handle != 0 ? _last_scene_resource : _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]); // the one FE bound
 
 	// Resolve MSAA back buffer if MSAA is active or copy when format conversion is required
 	if (_back_buffer_resolved != 0 && !_effects_rendered_this_frame)
@@ -1262,22 +1264,58 @@ void reshade::runtime::on_present_clean()
 	_is_in_present_call = false;
 #endif
 
+	// ✅ Before using _nfs_backbuffer_snapshot to composite:
+	// if (_nfs_scene_ready && _nfs_backbuffer_snapshot.handle != back_buffer_resource.handle)
+	// {
+	// 	reshade::log::message(log::level::warning,
+	// 		"⚠️ Snapshot FE buffer (%016llx) does not match present backbuffer (%016llx) — overriding snapshot",
+	// 		_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+	//
+	// 	_nfs_backbuffer_snapshot = back_buffer_resource;
+	// }
+
+	if (_nfs_scene_ready)
+	{
+		if (_nfs_backbuffer_snapshot.handle == 0)
+		{
+			reshade::log::message(log::level::warning,
+				"⚠️ No backbuffer snapshot recorded in on_nfs_present() — using present backbuffer = %016llx",
+				back_buffer_resource.handle);
+
+			_nfs_backbuffer_snapshot = back_buffer_resource;
+		}
+		else if (_nfs_backbuffer_snapshot.handle != back_buffer_resource.handle)
+		{
+			reshade::log::message(log::level::info,
+				"🟡 FE snapshot buffer (%016llx) differs from present backbuffer (%016llx) — keeping FE result",
+				_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+
+			// Do NOT override it anymore
+		}
+	}
+
 
 	// ✅ NEW: Deferred composite after FE
-	if (_nfs_scene_ready && !_effects_rendered_this_frame && _nfs_backbuffer_snapshot.handle != 0)
+	if (_nfs_scene_ready && !_effects_rendered_this_frame)
 	{
-		cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::shader_resource, api::resource_usage::copy_source);
-		cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::copy_dest);
-		cmd_list->copy_resource(back_buffer_resource, _nfs_backbuffer_snapshot);
-		cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::copy_source, api::resource_usage::shader_resource);
-		cmd_list->barrier(back_buffer_resource, api::resource_usage::copy_dest, api::resource_usage::present);
+		// At this point, the game has bound the final backbuffer
+		// Snapshot it now
+		_nfs_backbuffer_snapshot = back_buffer_resource;
+
+		// Now copy your effects into the actual buffer that will be shown
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::copy_source);
+		cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::present, api::resource_usage::copy_dest);
+
+		cmd_list->copy_resource(_nfs_backbuffer_snapshot, _scene_texture_output);
+
+		cmd_list->barrier(_scene_texture_output, api::resource_usage::copy_source, api::resource_usage::render_target);
+		cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::copy_dest, api::resource_usage::present);
 
 		_effects_rendered_this_frame = true;
-		_nfs_scene_ready = false;
 
 		reshade::log::message(log::level::info,
-			"✅ Deferred composite: _scene_texture_output (%016" PRIx64 ") → final backbuffer (%016" PRIx64 ")",
-			_nfs_backbuffer_snapshot.handle, back_buffer_resource.handle);
+			"✅ Final composite: _scene_texture_output (%016" PRIx64 ") → real present backbuffer (%016" PRIx64 ")",
+			_scene_texture_output.handle, _nfs_backbuffer_snapshot.handle);
 	}
 
 	// Composite

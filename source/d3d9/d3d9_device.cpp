@@ -16,6 +16,7 @@
 #include "com_utils.hpp"
 #include "hook_manager.hpp"
 #include "addon_manager.hpp"
+#include "MinHook.h"
 // NFS changes
 #ifdef GAME_MW
 #include "NFSMW_PreFEngHook.h"
@@ -2855,6 +2856,62 @@ void __declspec(naked) MotionBlur_EntryPoint()
 }
 #endif
 
+typedef HRESULT(APIENTRY *PresentFn)(IDirect3DDevice9 *, CONST RECT *, CONST RECT *, HWND, CONST RGNDATA *);
+PresentFn originalPresent = nullptr;
+
+// Hook D3D9 Present
+void InstallPresentHook(IDirect3DDevice9 *device)
+{
+	void **vtable = *reinterpret_cast<void ***>(device);
+	originalPresent = (PresentFn)vtable[17]; // vtable[17] = Present
+	MH_CreateHook(vtable[17], &HookedPresent, reinterpret_cast<void **>(&originalPresent));
+	MH_EnableHook(vtable[17]);
+}
+
+DWORD WINAPI InitThread(LPVOID)
+{
+	// Wait for the D3D9 device to be created by the game
+	while (!g_pd3dDevice)
+	{
+		g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS; // Replace with actual address
+		Sleep(100);
+	}
+
+	// Hook Present once the device is valid
+	if (!present_hook_installed)
+	{
+		InstallPresentHook(g_pd3dDevice);
+		present_hook_installed = true;
+	}
+
+	return 0;
+}
+
+HRESULT APIENTRY HookedPresent(IDirect3DDevice9 *device, CONST RECT *src, CONST RECT *dst, HWND hWnd, CONST RGNDATA *dirty)
+{
+	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
+	{
+		if (!reshade::g_runtime_nfs->get_is_in_present_call())
+		{
+			// ✅ Force last backbuffer to be what D3D9 is presenting right now
+			const reshade::api::resource backbuffer_resource =
+				reshade::g_runtime_nfs->get_device()->get_resource_from_view(
+					reshade::g_runtime_nfs->get_back_buffer_targets()[
+						reshade::g_runtime_nfs->get_swapchain()->get_current_back_buffer_index() * 2]);
+
+			reshade::g_runtime_nfs->_last_scene_resource = backbuffer_resource;
+
+			reshade::log::message(reshade::log::level::info,
+				"🎯 HookedPresent: Overriding backbuffer resource = %016llx", backbuffer_resource.handle);
+
+			reshade::g_runtime_nfs->on_nfs_present();
+		}
+	}
+
+	return originalPresent(device, src, dst, hWnd, dirty);
+}
+
+
 void ReShade_Hook()
 {
 	reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
@@ -2874,8 +2931,7 @@ void ReShade_Hook()
 			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
 #endif
 			g_pd3dDevice->g_force_fe_present_pass = true;
-			// reshade::g_runtime_nfs->on_nfs_present();
-			reshade::g_runtime_nfs->on_present_original();
+			reshade::g_runtime_nfs->on_nfs_present();
 			g_pd3dDevice->g_force_fe_present_pass = false;
 		}
 	}
@@ -2884,7 +2940,6 @@ void ReShade_Hook()
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
-bool hook_installed = false;
 
 int sub_831FA0 = 0x00831FA0; // FEManager::Render
 int sub_77E320 = 0x007AE61B; // address after original 'call sub_831FA0'
@@ -2892,6 +2947,8 @@ int sub_77E320 = 0x007AE61B; // address after original 'call sub_831FA0'
 void __declspec(naked) ReShade_EntryPoint()
 {
 	_asm mov NFSUC_EntryPoint_EBX, ebx
+
+	reshade::log::message(reshade::log::level::info, "🧠 EBX = %08X", NFSUC_EntryPoint_EBX);
 
 	// Log before
 	reshade::log::message(reshade::log::level::info, "🟡 ReShade_EntryPoint: Before calling ReShade_Hook");

@@ -225,7 +225,7 @@ namespace reshade
 		bool _app_state_captured_this_frame;
 		uint32_t _back_buffer_index_this_frame = 0;
 
-		std::array<reshade::api::resource_view, 8> _last_bound_rtvs;
+		std::array<api::resource_view, 8> _last_bound_rtvs;
 		uint32_t _last_bound_rtv_count = 0;
 		api::resource_view _last_bound_rtv = {};
 

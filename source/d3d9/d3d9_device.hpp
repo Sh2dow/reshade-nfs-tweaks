@@ -199,3 +199,7 @@ struct DECLSPEC_UUID("F1006E9A-1C51-4AF4-ACEF-3605D2D4C8EE") Direct3DDevice9 fin
 	reshade::api::resource _primitive_up_index_buffer = {};
 #endif
 };
+
+inline HRESULT APIENTRY HookedPresent(IDirect3DDevice9 *device, CONST RECT *src, CONST RECT *dst, HWND hWnd, CONST RGNDATA *dirty);
+DWORD WINAPI InitThread(LPVOID);
+inline bool present_hook_installed;
