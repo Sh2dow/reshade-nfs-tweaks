@@ -10,6 +10,8 @@
 #include <cstring> // std::memcmp, std::memcpy
 #include <algorithm> // std::copy_n, std::max, std::min, std::swap
 
+#include "runtime.hpp"
+
 #define vk _device_impl->_dispatch_table
 
 static void convert_subresource(uint32_t subresource, const VkImageCreateInfo &create_info, VkImageSubresourceLayers &subresource_info)
@@ -100,6 +102,13 @@ void reshade::vulkan::command_list_impl::barrier(uint32_t count, const api::reso
 
 void reshade::vulkan::command_list_impl::begin_render_pass(uint32_t count, const api::render_pass_render_target_desc *rts, const api::render_pass_depth_stencil_desc *ds)
 {
+	// 🔧 Track external RTV (NFS HUD / pre-FE effects)
+	if (g_active_rtv_tracker != nullptr && count > 0)
+	{
+		api::resource_view fake_rtvs[1] = { rts[0].view };
+		g_active_rtv_tracker(1, fake_rtvs);
+	}
+
 	_has_commands = true;
 	_is_in_render_pass = true;
 
@@ -346,9 +355,15 @@ void reshade::vulkan::command_list_impl::end_render_pass()
 		vk.CmdEndRenderPass(_orig);
 	}
 }
-void reshade::vulkan::command_list_impl::bind_render_targets_and_depth_stencil(uint32_t, const api::resource_view *, api::resource_view)
+void reshade::vulkan::command_list_impl::bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view *rtvs, api::resource_view dsv)
 {
 	assert(false);
+
+	// ⚠️ Vulkan doesn't use explicit RTV/DSV binding until render pass, so this is just a no-op
+
+	// ✅ RTV tracker logic (optional but useful for NFS mod)
+	if (g_active_rtv_tracker != nullptr)
+		g_active_rtv_tracker(count, rtvs);
 }
 
 void reshade::vulkan::command_list_impl::bind_pipeline(api::pipeline_stage stages, api::pipeline pipeline)

@@ -37,8 +37,6 @@
 #include <sk_hdr_png.hpp>
 
 #include "d3d9/d3d9_device.hpp"
-#include "d3d9/d3d9_impl_device.hpp"
-#include "d3d9/d3d9_impl_type_convert.hpp"
 #include "d3d9/d3d9_swapchain.hpp"
 
 bool resolve_path(std::filesystem::path &path, std::error_code &ec)
@@ -261,12 +259,20 @@ bool reshade::runtime::on_init()
 {
 	assert(!_is_initialized);
 
-#ifdef  GAME_UC
+#ifdef GAME_UC
+	// Only set if not already initialized (first runtime)
 	if (!g_runtime_nfs)
 		g_runtime_nfs = this;
 
-	// if (auto *impl = reinterpret_cast<d3d9::device_impl *>(g_pd3dDevice))
-	// 	impl->_runtime = this;
+	_render_thread_id = std::this_thread::get_id();
+
+	// Only register if this runtime is associated with a valid device
+	// This avoids registering dummy or fallback runtimes
+	// if (get_device() != nullptr)
+	// {
+	// 	reshade::log::message(log::level::debug, "📌 Registering runtime for device API: %d", static_cast<int>(get_device()->get_api()));
+	// 	reshade::g_active_runtimes.push_back(this);
+	// }
 #endif
 
 	const api::resource_desc back_buffer_desc = _device->get_resource_desc(_swapchain->get_back_buffer(0));
@@ -468,7 +474,7 @@ bool reshade::runtime::on_init()
 			"on_init(): ✅ Back buffer format detected via ReShade: format = 0x%X", static_cast<uint32_t>(_back_buffer_format));
 
 		// 2. Create input texture (copied from backbuffer)
-		if (_scene_texture_input.handle == 0 &&
+		if (_scene_texture_input == 0 &&
 			!_device->create_resource(input_desc, nullptr, api::resource_usage::copy_dest, &_scene_texture_input))
 		{
 			log::message(log::level::error, "on_init(): ❌ Failed to create _scene_texture_input!");
@@ -477,7 +483,7 @@ bool reshade::runtime::on_init()
 		log::message(log::level::debug, "on_init(): ✅ Created _scene_texture_input");
 
 		// 3. Create scene output texture
-		if (_scene_texture_output.handle == 0 &&
+		if (_scene_texture_output == 0 &&
 			!_device->create_resource(output_desc, nullptr, api::resource_usage::render_target, &_scene_texture_output))
 		{
 			log::message(log::level::error, "on_init(): ❌ Failed to create _scene_texture_output!");
@@ -523,10 +529,19 @@ bool reshade::runtime::on_init()
 		// 6. Reset tracking
 		_last_scene_resource = {};
 
-		// 7. IOC Hook external RTV tracker
-		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
-			track_render_targets_if_external(count, rtvs);
+		// 7. Global tracker for Vulkan (command_list hook)
+		g_active_rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
+			this->track_render_targets_if_external(count, rtvs);
 		};
+
+		// 8. IOC D3D9-specific hook external RTV tracker
+		if (_device->get_api() == api::device_api::d3d9)
+		{
+			static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
+				track_render_targets_if_external(count, rtvs);
+			};
+		}
+
 	}
 
 	create_state_block(_device, &_app_state);
@@ -645,6 +660,16 @@ void reshade::runtime::on_reset()
 	_device->destroy_resource_view(_empty_srv);
 	_empty_srv = {};
 
+	if (_device->get_api() == api::device_api::d3d9)
+		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = nullptr;
+
+	if (_device->get_api() == api::device_api::vulkan)
+	{
+		g_active_rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
+			this->track_render_targets_if_external(count, rtvs);
+		};
+	}
+
 	for (uint32_t i = 0; i < ARRAYSIZE(_effect_color_srv); ++i)
 	{
 		if (_effect_color_srv[i].handle != 0)
@@ -709,42 +734,238 @@ void reshade::runtime::track_render_targets_if_external(uint32_t count, const ap
 		return;
 
 	api::resource scene_res = _device->get_resource_from_view(rtvs[0]);
-
-	// Avoid tracking same resource (no-op)
 	if (_last_scene_resource == scene_res)
 		return;
 
-	// Optionally skip typeless or very small buffers (edge case safety)
 	api::resource_desc desc = _device->get_resource_desc(scene_res);
-	if (desc.texture.width < 16 || desc.texture.height < 16)
-		return;
+
+	// Validate against known back buffer dimensions and format
+	if (desc.texture.width != _width || desc.texture.height != _height || desc.texture.format != _back_buffer_format)
+		return; // Skip fake or offscreen render targets
+
+	// if (desc.texture.width < 16 || desc.texture.height < 16)
+	// 	return;
 
 	_last_scene_resource = scene_res;
 
-	// reshade::log::message(log::level::debug,
-	// 	"🎯 Tracked external RTV: %016llx → resource: %016llx (%ux%u)",
-	// 	rtvs[0].handle,
-	// 	scene_res.handle,
-	// 	desc.texture.width,
-	// 	desc.texture.height);
+	// if (_device->get_api() == api::device_api::vulkan)
+	// {
+	// 	// Only now copy it
+	// 	if (_effects_rendered_this_frame || _scene_texture_input == 0)
+	// 		return;
+	//
+	// 	api::command_list *cmd_list = _graphics_queue->get_immediate_command_list();
+	// 	if (cmd_list == nullptr)
+	// 		return;
+	//
+	// 	cmd_list->barrier(scene_res, api::resource_usage::undefined, api::resource_usage::copy_source);
+	// 	cmd_list->barrier(_scene_texture_input, api::resource_usage::undefined, api::resource_usage::copy_dest);
+	//
+	// 	cmd_list->copy_texture_region(
+	// 		scene_res, 0, nullptr,
+	// 		_scene_texture_input, 0, nullptr);
+	//
+	// 	cmd_list->barrier(_scene_texture_output, api::resource_usage::undefined, api::resource_usage::render_target);
+	//
+	// 	render_effects(cmd_list, _scene_texture_output_rtv, _scene_texture_output_rtv);
+	//
+	// 	// _effects_rendered_this_frame = true;
+	//
+	// 	reshade::log::message(log::level::info, "✅ Early ReShade effects rendered before frontend.");
+	//
+	// 	_is_rendering_pre_ui = true;
+	// 	on_present();
+	// }
+
+	_is_rendering_pre_ui = true;
+}
+
+reshade::api::resource_view reshade::runtime::get_rtv_from_last_scene_resource() const
+{
+	if (_last_scene_resource.handle == 0)
+		return { 0 };
+
+	reshade::api::resource_view rtv = { 0 };
+	reshade::api::resource_view_desc desc = {};
+	desc.type = reshade::api::resource_view_type::texture_2d;
+
+	_device->create_resource_view(
+		_last_scene_resource,
+		reshade::api::resource_usage::render_target,
+		desc,
+		&rtv);
+
+	return rtv;
+}
+
+bool reshade::runtime::are_effects_ready() const
+{
+	for (const auto &tech : _techniques)
+	{
+		if (!tech.enabled)
+			continue;
+
+		if (tech.permutations.empty())
+			return false;
+
+		const auto &perm = tech.permutations[0];
+		if (perm.passes.empty())
+			return false;
+
+		for (const auto &pass : perm.passes)
+		{
+			if (pass.pipeline == 0)
+				return false;
+		}
+
+		const effect &e = _effects[tech.effect_index];
+		if (!e.compiled || !e.created)
+			return false;
+	}
+	return true;
+}
+
+void reshade::runtime::on_nfs_present()
+{
+	if (_is_in_present_call || !_is_initialized || !_effects_enabled || is_loading())
+	{
+		reshade::log::message(reshade::log::level::debug, "⏳ Skipping on_nfs_present(): ReShade not ready");
+		return;
+	}
+
+	// Final safety recheck: mark effects as ready if loading is done
+	if (!_effects_fully_initialized &&
+		_reload_create_queue.empty() &&
+		_reload_remaining_effects == std::numeric_limits<size_t>::max())
+	{
+		_effects_fully_initialized = are_effects_ready();
+		reshade::log::message(reshade::log::level::debug, _effects_fully_initialized
+			? "✅ Effects now considered initialized in on_nfs_present()"
+			: "⚠️ Effects NOT ready during on_nfs_present() — skipping...");
+		if (!_effects_fully_initialized)
+			return;
+	}
+
+	// Effects are still loading — skip safely
+	if (_reload_remaining_effects != std::numeric_limits<size_t>::max() ||
+		!_reload_create_queue.empty() ||
+		!_effects_fully_initialized)
+	{
+		reshade::log::message(reshade::log::level::debug, "⏳ Skipping on_nfs_present(): effects are still initializing...");
+		return;
+	}
+
+	// Update back buffer tracking
+	_last_scene_resource = get_current_back_buffer();
+	if (_last_scene_resource == 0)
+	{
+		reshade::log::message(reshade::log::level::warning, "❌ Skipping on_nfs_present(): no valid back buffer");
+		return;
+	}
+
+	// Validate GPU resources and views
+	if (_scene_texture_input == 0 ||
+		_scene_texture_input_srv == 0 ||
+		_scene_texture_output == 0 ||
+		_scene_texture_output_rtv == 0)
+	{
+		reshade::log::message(reshade::log::level::warning,
+			"❌ Skipping on_nfs_present(): one or more scene resources or views are not created");
+		return;
+	}
+
+	auto *cmd_list = get_graphics_queue()->get_immediate_command_list();
+	if (cmd_list == nullptr)
+	{
+		reshade::log::message(reshade::log::level::warning, "❌ Skipping on_nfs_present(): no immediate command list available");
+		return;
+	}
+
+	// Copy resolved back buffer to input texture
+	cmd_list->copy_resource(_scene_texture_input, _last_scene_resource);
+
+	// Vulkan-safe validation using resource descriptors
+	const reshade::api::resource_desc input_desc = _device->get_resource_desc(_scene_texture_input);
+	const reshade::api::resource_desc output_desc = _device->get_resource_desc(_scene_texture_output);
+
+	// Validate descriptors
+	const bool input_ready =
+		_scene_texture_input.handle != 0 &&
+		input_desc.type == reshade::api::resource_type::texture_2d &&
+		input_desc.heap != reshade::api::memory_heap::unknown &&
+		input_desc.usage != reshade::api::resource_usage::undefined;
+
+	const bool output_ready =
+		_scene_texture_output.handle != 0 &&
+		output_desc.type == reshade::api::resource_type::texture_2d &&
+		output_desc.heap != reshade::api::memory_heap::unknown &&
+		output_desc.usage != reshade::api::resource_usage::undefined;
+
+	// Barrier input if valid
+	if (input_ready)
+	{
+		cmd_list->barrier(_scene_texture_input,
+			reshade::api::resource_usage::copy_dest,
+			reshade::api::resource_usage::shader_resource);
+	}
+	else
+	{
+		reshade::log::message(reshade::log::level::error,
+			"❌ Skipping input barrier: _scene_texture_input is invalid or uninitialized");
+	}
+
+	// Barrier output if valid
+	if (output_ready)
+	{
+		cmd_list->barrier(_scene_texture_output,
+			reshade::api::resource_usage::copy_dest,
+			reshade::api::resource_usage::render_target);
+	}
+	else
+	{
+		reshade::log::message(reshade::log::level::error,
+			"❌ Skipping output barrier: _scene_texture_output is invalid or uninitialized");
+	}
+
+	// Render only if both are valid
+	if (input_ready && output_ready)
+	{
+		render_effects(cmd_list,
+			_scene_texture_input_srv,
+			_scene_texture_output_rtv);
+
+		set_effects_rendered_this_frame(true);
+	}
+	else
+	{
+		reshade::log::message(reshade::log::level::warning,
+			"⚠️ Skipping render_effects(): input or output texture is not safe");
+	}
+
+	_is_in_present_call = false;
 }
 
 void reshade::runtime::on_present()
 {
-	nfs_fe_passed = false;
-}
-
-void reshade::runtime::on_present_original()
-{
-	if(!_is_initialized)
+	if (!_is_initialized)
 		return;
 
 #ifdef NFS_MULTITHREAD
-	if (nfs_fe_passed)
+	if (_graphics_queue == nullptr || _graphics_queue->get_immediate_command_list() == nullptr)
 	{
-		nfs_fe_passed = false;
+		reshade::log::message(log::level::warning, "⚠️ on_present(): skipped — graphics queue or cmd_list not ready");
 		return;
 	}
+
+	// if (on_nfs_present_requested)
+	// {
+	// 	on_nfs_present_requested = false;
+	//
+	// 	std::lock_guard<std::mutex> lock(_render_mutex);
+	// 	_is_rendering_pre_ui = true;
+	// 	on_nfs_present();
+	// 	_is_rendering_pre_ui = false;
+	// }
 #endif
 
 #if RESHADE_ADDON
@@ -2484,6 +2705,19 @@ bool reshade::runtime::load_effect(const std::filesystem::path &source_file, con
 }
 bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_index)
 {
+	std::scoped_lock lock(_effect_creation_mutex);
+
+	effect &e = _effects[effect_index];
+	effect::permutation &perm = e.permutations[permutation_index];
+
+	if (e.created || !e.compiled)
+	{
+		reshade::log::message(log::level::warning,
+			"⚠️ Skipping create_effect(): effect {} already created or not compiled",
+			static_cast<int>(effect_index));
+		return false;
+	}
+
 	effect &effect = _effects[effect_index];
 
 	if (!effect.compiled)

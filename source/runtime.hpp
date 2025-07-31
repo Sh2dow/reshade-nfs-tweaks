@@ -67,7 +67,7 @@ namespace reshade
 		bool on_init();
 		void on_reset();
 		void on_present();
-		void on_present_original();
+		void on_present_clean();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
 
@@ -204,43 +204,56 @@ namespace reshade
 
 		void reload_effect_next_frame(const char *effect_name) final;
 		void track_render_targets_if_external(uint32_t count, const api::resource_view* rtvs);
+		reshade::api::resource_view get_rtv_from_last_scene_resource() const;
+		bool are_effects_ready() const;
+		void on_nfs_present();
 
-// NFS Stuff
+		// NFS Stuff
+		std::mutex &get_render_mutex() { return _render_mutex; }
+
+		// prevent accidental copies
+		runtime(const runtime &) = delete;
+		runtime &operator=(const runtime &) = delete;
+
+		// allow moves if you need them
+		runtime(runtime &&) = default;
+		runtime &operator=(runtime &&) = default;
+#ifdef GAME_UC
+		bool bMotionBlur;
+		std::thread::id _render_thread_id;
+		bool on_nfs_present_requested;
+		bool _is_rendering_pre_ui;
+#endif
+		bool _effects_fully_initialized = false;
+
 		bool is_gui_ready() const
 		{
 			return _imgui_context != nullptr && _is_initialized;
 		}
-
-#ifdef GAME_UC
-		bool bMotionBlur;
-		bool g_force_fe_present_pass;
-#endif
-		std::vector<api::resource_view> get_back_buffer_targets() { return _back_buffer_targets; }
-
-		api::resource _last_scene_resource = {};
-
-		api::resource_view _effect_color_srv[2] = {};
-
-		bool nfs_fe_passed;
+		bool get_effects_rendered_this_frame() const {return _effects_rendered_this_frame;}
+		void set_effects_rendered_this_frame(bool value) {_effects_rendered_this_frame = value;}
 		bool get_is_in_present_call() const { return _is_in_present_call; }
 		bool get_is_initialized() const { return _is_initialized; }
 		uint64_t get_frame_count() const { return _frame_count; }
+		api::command_queue *const get_graphics_queue() const { return  _graphics_queue;}
 
+
+		api::resource _last_scene_resource = {};
+		api::resource_view _effect_color_srv[2] = {};
 		api::resource _scene_texture = {};
-
 		// Input backbuffer copy
 		api::resource _scene_texture_input = {};
 		api::resource_view _scene_texture_input_srv = {};
-
 		// Offscreen target for rendering
 		api::resource _scene_texture_output = {};
 		api::resource_view _scene_texture_output_rtv = {};
-
 		// Optional depth (if you plan to expand)
 		api::resource_view _scene_depth_texture = {};
 
-
 	private:
+		std::mutex _effect_creation_mutex;
+		std::mutex _render_mutex;
+
 		static void check_for_update();
 
 		void load_config();
@@ -617,6 +630,8 @@ namespace reshade
 	template <> void runtime::set_uniform_value<int32_t>(uniform &variable, const int32_t *values, size_t count, size_t array_index);
 	template <> void runtime::set_uniform_value<uint32_t>(uniform &variable, const uint32_t *values, size_t count, size_t array_index);
 
+	// NFS stuff
+	// inline std::vector<runtime *> g_active_runtimes;
 	inline runtime *g_runtime_nfs = nullptr;
-	inline bool g_force_custom_fe_render_pass;
+	inline std::function<void(uint32_t, const reshade::api::resource_view *)> g_active_rtv_tracker = nullptr;
 }

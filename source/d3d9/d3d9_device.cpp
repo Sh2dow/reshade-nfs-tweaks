@@ -2858,45 +2858,39 @@ void __declspec(naked) MotionBlur_EntryPoint()
 
 void ReShade_Hook()
 {
-	// 🔒 Use raw device to avoid uninitialized ReShade wrapper logic
-	IDirect3DDevice9 *raw_device = *(IDirect3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
-	if (!raw_device)
+	auto *runtime = reshade::g_runtime_nfs;
+	if (!runtime || !runtime->get_is_initialized())
 		return;
 
-	// ✅ Don't use Direct3DDevice9 wrapper here — ReShade internals might not be ready
-	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
-	{
-		if (!reshade::g_runtime_nfs->get_is_in_present_call())
-		{
-			auto api = reshade::g_runtime_nfs->get_device()->get_api();
+	if (std::this_thread::get_id() != runtime->_render_thread_id)
+		return;
 
-			// Delay for Vulkan (DXVK) until it's safe
-			if (api != reshade::api::device_api::vulkan || reshade::g_runtime_nfs->get_swapchain())
-			{
-				static int skip_frames = 2;
-				if (skip_frames > 0)
-				{
-					--skip_frames;
-					reshade::log::message(reshade::log::level::info, "⏳ Delaying ReShade init for %d more frames", skip_frames);
-				}
-				else
-				{
-					reshade::g_runtime_nfs->on_present_original();
-					reshade::g_runtime_nfs->nfs_fe_passed = true;
-				}
-			}
-			else
-			{
-				reshade::log::message(reshade::log::level::debug, "⏳ Skipping on_present_original() on Vulkan (not safe yet)");
-			}
-		}
+	if (runtime->get_is_in_present_call())
+		return;
+
+	std::lock_guard<std::mutex> lock(runtime->get_render_mutex());
+
+	// Check that effects are fully ready AND render targets exist
+	if (runtime->are_effects_ready() &&
+		runtime->_scene_texture_input != 0 &&
+		runtime->_scene_texture_output != 0 &&
+		runtime->_scene_texture_input_srv != 0 &&
+		runtime->_scene_texture_output_rtv != 0)
+	{
+		runtime->_is_rendering_pre_ui = true;
+		runtime->on_nfs_present();
+		runtime->_is_rendering_pre_ui = false;
+	}
+	else
+	{
+		reshade::log::message(reshade::log::level::debug,
+			"⏳ Skipping ReShade_Hook(): render targets or effects not ready");
 	}
 }
 
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
-
 
 void __declspec(naked) ReShade_EntryPoint()
 {
@@ -2920,7 +2914,7 @@ void __stdcall FEManager_Render_Hook()
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
 	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 
-	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	g_pd3dDevice->_implicit_swapchain->_runtime->on_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
 	FEManager_Render(TheThis);
 }
 #endif

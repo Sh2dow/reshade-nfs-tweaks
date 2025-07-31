@@ -15,7 +15,7 @@ namespace reshade::d3d9
 	class device_impl : public api::api_object_impl<IDirect3DDevice9 *, api::device, api::command_queue, api::command_list>
 	{
 	public:
-#ifdef GAME_UC
+#ifdef GAME_UC || NFS_MULTITHREAD
 		api::resource_view _last_render_targets[8] = {};
 		uint32_t _last_render_target_count = 0;
 		api::resource_view _last_known_backbuffer = {};
