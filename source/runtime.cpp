@@ -36,6 +36,9 @@
 #include <d3dcompiler.h>
 #include <sk_hdr_png.hpp>
 
+#include "d3d9/d3d9_impl_device.hpp"
+#include "d3d9/d3d9_impl_type_convert.hpp"
+
 bool resolve_path(std::filesystem::path &path, std::error_code &ec)
 {
 	// First convert path to an absolute path
@@ -256,6 +259,14 @@ bool reshade::runtime::on_init()
 {
 	assert(!_is_initialized);
 
+#ifdef  GAME_UC
+	if (!g_runtime_nfs)
+		g_runtime_nfs = this;
+
+	// if (auto *impl = reinterpret_cast<d3d9::device_impl *>(g_pd3dDevice))
+	// 	impl->_runtime = this;
+#endif
+
 	const api::resource_desc back_buffer_desc = _device->get_resource_desc(_swapchain->get_back_buffer(0));
 
 	// Avoid initializing on very small swap chains (e.g. implicit swap chain in The Sims 4, which is not used to present in windowed mode)
@@ -426,6 +437,96 @@ bool reshade::runtime::on_init()
 		}
 	}
 
+	// 🔧 Create off-screen scene render targets (for early scene-only effects)
+	reshade::log::message(log::level::warning,
+		"🆕 on_init(): creating scene targets (frame = %u)", _frame_count);
+
+	{
+		api::resource_desc input_desc = {};
+		api::resource_desc output_desc = {};
+
+		input_desc.type = output_desc.type = api::resource_type::texture_2d;
+		input_desc.texture.width = output_desc.texture.width = _width;
+		input_desc.texture.height = output_desc.texture.height = _height;
+		input_desc.texture.depth_or_layers = output_desc.texture.depth_or_layers = 1;
+		input_desc.texture.levels = output_desc.texture.levels = 1;
+		input_desc.texture.format = output_desc.texture.format = _back_buffer_format;
+		input_desc.texture.samples = output_desc.texture.samples = 1;
+		input_desc.heap = output_desc.heap = api::memory_heap::gpu_only;
+
+		input_desc.usage = api::resource_usage::copy_dest | api::resource_usage::shader_resource;
+		output_desc.usage = api::resource_usage::render_target | api::resource_usage::copy_source | api::resource_usage::shader_resource;
+
+		// 1. Detect actual backbuffer format
+		api::resource backbuffer = _device->get_resource_from_view(_back_buffer_targets[0]);
+		api::resource_desc bb_desc = _device->get_resource_desc(backbuffer);
+		_back_buffer_format = bb_desc.texture.format;
+
+		reshade::log::message(log::level::info,
+			"on_init(): ✅ Back buffer format detected via ReShade: format = 0x%X", static_cast<uint32_t>(_back_buffer_format));
+
+		// 2. Create input texture (copied from backbuffer)
+		if (_scene_texture_input.handle == 0 &&
+			!_device->create_resource(input_desc, nullptr, api::resource_usage::copy_dest, &_scene_texture_input))
+		{
+			log::message(log::level::error, "on_init(): ❌ Failed to create _scene_texture_input!");
+			goto exit_failure;
+		}
+		log::message(log::level::debug, "on_init(): ✅ Created _scene_texture_input");
+
+		// 3. Create scene output texture
+		if (_scene_texture_output.handle == 0 &&
+			!_device->create_resource(output_desc, nullptr, api::resource_usage::render_target, &_scene_texture_output))
+		{
+			log::message(log::level::error, "on_init(): ❌ Failed to create _scene_texture_output!");
+			goto exit_failure;
+		}
+
+		auto out_desc = _device->get_resource_desc(_scene_texture_output);
+		log::message(log::level::debug, "✅ Created _scene_texture_output: width=%u height=%u format=0x%X usage=0x%X",
+			out_desc.texture.width, out_desc.texture.height,
+			static_cast<uint32_t>(out_desc.texture.format),
+			static_cast<uint32_t>(out_desc.usage));
+
+		// 4. Create RTV from scene output
+		if (_scene_texture_output_rtv.handle != 0)
+			_device->destroy_resource_view(_scene_texture_output_rtv);
+		_scene_texture_output_rtv = {};
+
+		if (!_device->create_resource_view(
+				_scene_texture_output,
+				api::resource_usage::render_target,
+				api::resource_view_desc(_back_buffer_format),  // Use detected format
+				&_scene_texture_output_rtv))
+		{
+			log::message(log::level::error, "❌ Failed to create _scene_texture_output_rtv in on_init()");
+			goto exit_failure;
+		}
+		log::message(log::level::info, "✅ Created _scene_texture_output_rtv: format=0x%X, handle=%p",
+			static_cast<uint32_t>(_back_buffer_format), _scene_texture_output_rtv.handle);
+
+		// 5. Create SRV from input
+		if (_scene_texture_input_srv.handle == 0 &&
+			!_device->create_resource_view(_scene_texture_input,
+				api::resource_usage::shader_resource,
+				api::resource_view_desc(input_desc.texture.format),
+				&_scene_texture_input_srv))
+		{
+			log::message(log::level::error, "❌ Failed to create _scene_texture_input_srv in on_init()");
+			goto exit_failure;
+		}
+		log::message(log::level::info, "✅ Created _scene_texture_input_srv: format=0x%X, handle=%p",
+			static_cast<uint32_t>(input_desc.texture.format), _scene_texture_input_srv.handle);
+
+		// 6. Reset tracking
+		_last_scene_resource = {};
+
+		// 7. Hook external RTV tracker
+		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
+			track_render_targets_if_external(count, rtvs);
+		};
+	}
+
 	create_state_block(_device, &_app_state);
 
 #if RESHADE_GUI
@@ -519,10 +620,37 @@ void reshade::runtime::on_reset()
 	// Already performs a wait for idle, so no need to do it again before destroying resources below
 	destroy_effects();
 
+	reshade::log::message(log::level::warning,
+	"🔄 on_reset(): releasing _scene_texture_output_rtv = %p _scene_texture = %p (frame = %u)",
+	_scene_texture_output_rtv.handle, _scene_texture.handle, _frame_count);
+
+	_device->destroy_resource_view(_scene_texture_output_rtv);
+	_scene_texture_output_rtv = {};
+	_device->destroy_resource(_scene_texture);
+	_scene_texture = {};
+
+	_device->destroy_resource_view(_scene_texture_input_srv);
+	_scene_texture_input_srv = {};
+
+	_device->destroy_resource(_scene_texture_input);
+	_scene_texture_input = {};
+
+	_device->destroy_resource(_scene_texture_output);
+	_scene_texture_output = {};
+
 	_device->destroy_resource(_empty_tex);
 	_empty_tex = {};
 	_device->destroy_resource_view(_empty_srv);
 	_empty_srv = {};
+
+	for (uint32_t i = 0; i < ARRAYSIZE(_effect_color_srv); ++i)
+	{
+		if (_effect_color_srv[i].handle != 0)
+			_device->destroy_resource_view(_effect_color_srv[i]);
+		_effect_color_srv[i] = {};
+	}
+
+	_last_scene_resource= {};
 
 	for (const effect_permutation &permutation : _effect_permutations)
 	{
@@ -572,9 +700,41 @@ void reshade::runtime::on_reset()
 
 	log::message(log::level::info, "Destroyed runtime environment on runtime %p ('%s').", this, _config_path.u8string().c_str());
 }
+
+void reshade::runtime::track_render_targets_if_external(uint32_t count, const api::resource_view *rtvs)
+{
+	if (count == 0 || rtvs == nullptr || rtvs[0].handle == 0)
+		return;
+
+	api::resource scene_res = _device->get_resource_from_view(rtvs[0]);
+
+	// Avoid tracking same resource (no-op)
+	if (_last_scene_resource == scene_res)
+		return;
+
+	// Optionally skip typeless or very small buffers (edge case safety)
+	api::resource_desc desc = _device->get_resource_desc(scene_res);
+	if (desc.texture.width < 16 || desc.texture.height < 16)
+		return;
+
+	_last_scene_resource = scene_res;
+
+	// reshade::log::message(log::level::debug,
+	// 	"🎯 Tracked external RTV: %016llx → resource: %016llx (%ux%u)",
+	// 	rtvs[0].handle,
+	// 	scene_res.handle,
+	// 	desc.texture.width,
+	// 	desc.texture.height);
+}
+
 void reshade::runtime::on_present()
 {
-	if (!_is_initialized)
+	nfs_fe_passed = false;
+}
+
+void reshade::runtime::on_present_original()
+{
+	if (nfs_fe_passed || !_is_initialized)
 		return;
 
 #if RESHADE_ADDON
@@ -634,9 +794,6 @@ void reshade::runtime::on_present()
 	if (_should_save_screenshot)
 		save_screenshot(_screenshot_save_before ? "After" : std::string_view());
 
-	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
-	*drawHUDAddr = drawFrontEnd;
-
 	_frame_count++;
 	const auto current_time = std::chrono::high_resolution_clock::now();
 	_last_frame_duration = current_time - _last_present_time; _last_present_time = current_time;
@@ -668,19 +825,8 @@ void reshade::runtime::on_present()
 
 		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
 		{
-			*drawHUDAddr = _screenshot_nfs_hud;
-
 			_screenshot_count++;
 			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame
-		}
-
-		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
-		{
-			// Toggle drawFrontEnd value
-			drawFrontEnd = !drawFrontEnd;
-
-			// Update the actual memory address as well
-			*(bool *)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
 		}
 
 		// Do not allow the following shortcuts while effects are being loaded or initialized (since they affect that state)
@@ -872,12 +1018,12 @@ void reshade::runtime::on_present()
 			if (was_enabled)
 				_backup_texture_semantic_bindings = _texture_semantic_bindings;
 
-			for (const auto &info : _backup_texture_semantic_bindings)
+			for (const auto &binding : _backup_texture_semantic_bindings)
 			{
-				if (info.second.first == _effect_permutations[0].color_srv[0] && info.second.second == _effect_permutations[0].color_srv[1])
+				if (binding.second.first == _effect_permutations[0].color_srv[0] && binding.second.second == _effect_permutations[0].color_srv[1])
 					continue;
 
-				update_texture_bindings(info.first.c_str(), addon_enabled ? info.second.first : api::resource_view { 0 }, addon_enabled ? info.second.second : api::resource_view { 0 });
+				update_texture_bindings(binding.first.c_str(), addon_enabled ? binding.second.first : api::resource_view { 0 }, addon_enabled ? binding.second.second : api::resource_view { 0 });
 			}
 		}
 	}
@@ -1044,6 +1190,10 @@ void reshade::runtime::save_config() const
 	config.set("SCREENSHOT", "PostSaveCommandWorkingDirectory", _screenshot_post_save_command_working_directory);
 	config.set("SCREENSHOT", "PostSaveCommandHideWindow", _screenshot_post_save_command_hide_window);
 	config.set("SCREENSHOT", "ShowNfsFe", _screenshot_nfs_hud);
+
+#ifdef GAME_UC
+	config.set("NFS", "MotionBlur", bMotionBlur);
+#endif
 
 #if RESHADE_GUI
 	save_config_gui(config);

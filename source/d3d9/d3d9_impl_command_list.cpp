@@ -93,6 +93,10 @@ void reshade::d3d9::device_impl::end_render_pass()
 }
 void reshade::d3d9::device_impl::bind_render_targets_and_depth_stencil(uint32_t count, const api::resource_view *rtvs, api::resource_view dsv)
 {
+	// 🔧 Runtime will do smart filtering
+	if (rtv_tracker)
+		rtv_tracker(count, rtvs);
+
 	if (count != 0)
 	{
 		assert(count <= _caps.NumSimultaneousRTs);

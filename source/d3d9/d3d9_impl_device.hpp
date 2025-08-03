@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "d3d9_impl_state_block.hpp"
 #include "reshade_api_object_impl.hpp"
 
@@ -13,7 +15,15 @@ namespace reshade::d3d9
 	class device_impl : public api::api_object_impl<IDirect3DDevice9 *, api::device, api::command_queue, api::command_list>
 	{
 	public:
-		explicit device_impl(IDirect3DDevice9 *device);
+#ifdef GAME_UC
+		api::resource_view _last_render_targets[8] = {};
+		uint32_t _last_render_target_count = 0;
+		api::resource_view _last_known_backbuffer = {};
+
+		std::function<void(uint32_t, const reshade::api::resource_view *)> rtv_tracker = nullptr;
+#endif
+
+		explicit device_impl(IDirect3DDevice9* device);
 		~device_impl();
 
 		api::device_api get_api() const final { return api::device_api::d3d9; }

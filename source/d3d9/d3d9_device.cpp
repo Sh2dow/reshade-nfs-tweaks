@@ -4,6 +4,10 @@
  */
 
 #include "d3d9_device.hpp"
+#include "runtime.hpp"
+
+#include <nfsincludes/injector/injector.hpp>
+
 #include "d3d9_resource.hpp"
 #include "d3d9_swapchain.hpp"
 #include "d3d9on12_device.hpp"
@@ -2828,11 +2832,14 @@ void Direct3DDevice9::modify_pool_for_d3d9ex(DWORD &usage, D3DPOOL &pool) const
 }
 #endif
 
+
+// NFS Hooks
 #if defined(GAME_UC) || defined(GAME_PS)
 #ifdef GAME_UC
 bool bGlobalMotionBlur = false;
 int NFSUC_MOTIONBLUR_ExitPointTrue = NFSUC_MOTIONBLUR_EXIT_TRUE;
 int NFSUC_MOTIONBLUR_ExitPointFalse = NFSUC_MOTIONBLUR_EXIT_FALSE;
+
 void __declspec(naked) MotionBlur_EntryPoint()
 {
 	if (!bGlobalMotionBlur)
@@ -2846,56 +2853,61 @@ void __declspec(naked) MotionBlur_EntryPoint()
 }
 #endif
 
-// void __stdcall ReShade_Hook()
-// {
-// 	// Access the Direct3DDevice9 from the game's address
-// 	Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
-//
-// 	#ifdef GAME_UC
-// 		bGlobalMotionBlur = g_pd3dDevice->_implicit_swapchain->_runtime->bMotionBlur; // hax for MotionBlur toggle because we can't read from runtime in the game...
-// 	#endif
-// 		g_pd3dDevice->_implicit_swapchain->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE!
-// }
-
-void __stdcall ReShade_Hook()
+void ReShade_Hook()
 {
-	// Access the Direct3DDevice9 pointer from the game's memory
-	Direct3DDevice9 *g_pd3dDevice = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
+	// reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
 
-	if (g_pd3dDevice == nullptr)
-	{
-		// reshade::log::message(reshade::log::level::error, "Failed to retrieve Direct3DDevice9 instance.");
+	g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
+	if (g_pd3dDevice == nullptr || g_pd3dDevice->_implicit_swapchain == nullptr || !g_pd3dDevice->_implicit_swapchain->_is_initialized)
 		return;
-	}
 
-	// Access the implicit swap chain
-	Direct3DSwapChain9 *swapchain = g_pd3dDevice->_implicit_swapchain;
-	if (swapchain == nullptr)
+	// ✅ Run this BEFORE the frontend UI renders
+	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
 	{
-		// reshade::log::message(reshade::log::level::error, "Failed to retrieve implicit swap chain.");
-		return;
-	}
+		g_pd3dDevice->rt_initialized_once = true;
+
+		// reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu",
+		//                       reshade::g_runtime_nfs->get_frame_count());
+
+		if (!reshade::g_runtime_nfs->get_is_in_present_call())
+		{
+			IDirect3DSurface9* game_rt_surface = nullptr;
+			if (SUCCEEDED(g_pd3dDevice->GetRenderTarget(0, &game_rt_surface)) && game_rt_surface != nullptr)
+			{
+				reshade::api::resource scene_resource = {reinterpret_cast<uintptr_t>(game_rt_surface)};
+
+				reshade::g_runtime_nfs->_last_scene_resource = scene_resource;
+
+				reshade::g_runtime_nfs->get_device()->create_resource_view(
+					scene_resource,
+					reshade::api::resource_usage::shader_resource,
+					reshade::api::resource_view_desc(reshade::api::format::unknown),
+					&reshade::g_runtime_nfs->_effect_color_srv[0]);
+
+				// reshade::log::message(reshade::log::level::info,
+				//                       "✅ ReShade_Hook: Captured game RT = %016llx", scene_resource.handle);
+
+				game_rt_surface->Release(); // Release COM ref
+			}
+			else
+			{
+				reshade::log::message(reshade::log::level::warning,
+				                      "⚠️ ReShade_Hook: Failed to get game render target.");
+			}
 
 #ifdef GAME_UC
-	// Toggle motion blur if applicable
-	bGlobalMotionBlur = swapchain->bMotionBlur; // Assuming `bMotionBlur` exists
-	// bGlobalMotionBlur = true; // Example: Enable motion blur
-	// reshade::log::message(reshade::log::level::debug, "Motion blur toggled in GAME_UC.");
+			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
 #endif
-
-	// reshade::log::message(reshade::log::level::debug, "Implicit swap chain retrieved successfully.");
-
-	// Call the NFS-specific present method
-	swapchain->on_nfs_present(nullptr, nullptr, nullptr, nullptr);
-
-	// reshade::log::message(reshade::log::level::info, "ReShade effects rendered before FE.");
+			reshade::g_runtime_nfs->on_present_original();
+			reshade::g_runtime_nfs->nfs_fe_passed = true;
+		}
+	}
 }
-
-
 
 int NFSUC_ExitPoint1 = NFSUC_EXIT1;
 int NFSUC_ExitPoint2 = NFSUC_EXIT2;
 int NFSUC_EntryPoint_EBX = 0;
+
 void __declspec(naked) ReShade_EntryPoint()
 {
 	_asm mov NFSUC_EntryPoint_EBX, ebx
@@ -2904,7 +2916,6 @@ void __declspec(naked) ReShade_EntryPoint()
 		_asm jmp NFSUC_ExitPoint1
 	_asm jmp NFSUC_ExitPoint2
 }
-
 
 #else
 void(__thiscall* FEManager_Render)(unsigned int dis) = (void(__thiscall*)(unsigned int))FEMANAGER_RENDER_ADDRESS;
@@ -2917,7 +2928,7 @@ void __stdcall FEManager_Render_Hook()
 	// NOTE FOR MODDERS: Please, for the love of everything that exists AVOID USING TEXMOD
 	//Direct3DDevice9* g_pd3dDevice = *(Direct3DDevice9**)NFS_D3D9_DEVICE_ADDRESS;
 
-	g_pd3dDevice->_implicit_swapchain->on_nfs_present(nullptr, nullptr, nullptr, nullptr); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
+	g_pd3dDevice->_implicit_swapchain->_runtime->on_nfs_present(); // render ReShade BEFORE FE renders ingame! TODO: dig deeper and make ONLY ReShade UI above the FE! MW done!
 	FEManager_Render(TheThis);
 }
 #endif

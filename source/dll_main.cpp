@@ -10,6 +10,8 @@
 #include "addon_manager.hpp"
 #include <Windows.h>
 #include <Psapi.h>
+
+#include "d3d9/d3d9_device.hpp"
 #ifndef NDEBUG
 #include <DbgHelp.h>
 
@@ -338,6 +340,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 
 						reshade::hooks::register_module(get_system_path() / L"d2d1.dll");
 						reshade::hooks::register_module(get_system_path() / L"d3d9.dll");
+#ifndef NFS_MULTITHREAD
 						reshade::hooks::register_module(get_system_path() / L"d3d10.dll");
 						reshade::hooks::register_module(get_system_path() / L"d3d10_1.dll");
 						reshade::hooks::register_module(get_system_path() / L"d3d11.dll");
@@ -347,13 +350,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 							reshade::hooks::register_module(L"d3d12.dll");
 						else
 							reshade::hooks::register_module(get_system_path() / L"d3d12.dll");
+#endif
 
 						reshade::hooks::register_module(get_system_path() / L"dxgi.dll");
 					}
+#ifndef NFS_MULTITHREAD
 
 					// Only register OpenGL hooks when module is not called any D3D module name
 					if (!is_d3d && !is_dxgi)
 						reshade::hooks::register_module(get_system_path() / L"opengl32.dll");
+#endif
 
 					// Do not register Vulkan hooks, since Vulkan layering mechanism is used instead
 
@@ -361,11 +367,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 				}
 			}
 
-				// NFS INJECTION
+			// NFS INJECTION
 
 #ifdef NFS_MULTITHREAD
-				injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
-				injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
+			injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+			injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
 #else
 #ifdef NFS_MULTITHREAD
 				injector::MakeCALL(FEMANAGER_RENDER_HOOKADDR1, FEManager_Render_Hook, true);

@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <array>
+
 #include "reshade_api.hpp"
 #include "state_block.hpp"
 #include "imgui_code_editor.hpp"
@@ -13,6 +15,8 @@
 #include <filesystem>
 #include <atomic>
 #include <shared_mutex>
+
+#include "dll_log.hpp"
 
 #ifdef GAME_MW
 #include "NFSMW_PreFEngHook.h"
@@ -61,7 +65,6 @@ namespace reshade
 
 		bool on_init();
 		void on_reset();
-		void on_nfs_present();
 		void on_present();
 
 		uint64_t get_native() const final { return _swapchain->get_native(); }
@@ -197,9 +200,39 @@ namespace reshade
 		void set_color_space(api::color_space color_space) final;
 
 		void reload_effect_next_frame(const char *effect_name) final;
+		void track_render_targets_if_external(uint32_t count, const api::resource_view* rtvs);
+
+		// NFS Stuff
+		void on_present_original();
+		std::array<api::resource_view, 8> _last_bound_rtvs;
+		api::resource _last_scene_resource = {};
+
+		api::resource_view _effect_color_srv[2] = {};
+
+		bool nfs_fe_passed;
+		bool get_is_in_present_call() const { return _is_in_present_call; }
+		bool get_is_initialized() const { return _is_initialized; }
+		uint64_t get_frame_count() const { return _frame_count; }
+
+		api::resource _scene_texture = {};
+
+		// Input backbuffer copy
+		api::resource _scene_texture_input = {};
+		api::resource_view _scene_texture_input_srv = {};
+
+		// Offscreen target for rendering
+		api::resource _scene_texture_output = {};
+		api::resource_view _scene_texture_output_rtv = {};
+
+		// Optional depth (if you plan to expand)
+		api::resource_view _scene_depth_texture = {};
+
+// unused
+
 
 #ifdef GAME_UC
 		bool bMotionBlur;
+		bool g_force_fe_present_pass;
 #endif
 
 	private:
@@ -578,4 +611,7 @@ namespace reshade
 	template <> void runtime::set_uniform_value<float>(uniform &variable, const float *values, size_t count, size_t array_index);
 	template <> void runtime::set_uniform_value<int32_t>(uniform &variable, const int32_t *values, size_t count, size_t array_index);
 	template <> void runtime::set_uniform_value<uint32_t>(uniform &variable, const uint32_t *values, size_t count, size_t array_index);
+
+	inline runtime *g_runtime_nfs = nullptr;
+	inline bool g_force_custom_fe_render_pass;
 }

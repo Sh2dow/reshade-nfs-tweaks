@@ -9,11 +9,33 @@
 #ifndef NFS_MULTITHREAD
 #define NFS_MULTITHREAD
 #endif
+#define GAME_SCENE_LOADED_SUB 0x0091CAE0
+
+#define FE_EndFrame_Addr 0x007B2F20 // sub_7B2F20
+#define FE_EndFrame_FinalJump 0x007B3285 //
+
+#define HOOK_ADDR  0x007B3044 // 0x007B303A //0x0087C585 //0x007B3066 //0x007B304B //0x007B3043 //0x007B3026
+#define HOOK_RET_ADDR	0x007B302B //0x0087C58B
+#define FEManager_HandleChildFlowDone_ADDR    0x00596300
+#define ORIGINAL_FE_CHECK	0x00831F80
+#define FRONTEND_LIST_HEAD_ADDR    0x00D5E9E0
+#define SAFER_HOOK_RET_ADDR  0x007B302B
+#define RENDER_FINISHED 0x007B3013
+#define RETURN_TO_7B3018_ADDR 0x007B301D
+#define sub_763DB0 0x00763DB0
+#define FRONTEND_RENDER_HOOKADDR1 0x007B3018
+#define FRONTEND_RENDER_DRIVER_ADDR 0x007B43D0
+#define FRONTEND_RENDER_DRIVER_RET_ADDR 0x007B43DC
+
 #define FEMANAGER_RENDER_HOOKADDR1 0x007AE5D8
+#define FEMANAGER_RENDER_HOOKADDR2 0x007AE616     // Place hook *before* call
+#define FE_RENDER_FUNC_ADDR       0x00831FA0      // Actual address of FEManager::Render()
+
 #define NFSUC_EXIT1 0x007AE5DE
 #define NFSUC_EXIT2 0x07AE635
 #define NFS_D3D9_DEVICE_ADDRESS 0x00EA0110
 #define DRAW_FENG_BOOL_ADDR 0x00D52ECA
+#define DRAW_FENG_RET_ADDR  0x00D52ECF
 
 #define NFSUC_MOTIONBLUR_HOOK_ADDR 0x007B2978
 #define NFSUC_MOTIONBLUR_EXIT_TRUE 0x007B297F
@@ -138,6 +160,7 @@
 
 // TODO - find FEngine package command control
 #define FENG_MINSTANCE_ADDR 0x00D992BC
+#define VTABLE_RENDER_INDEX 15
 //#define FENG_QUEUEPACKAGEPOP_ADDR 0x0059F160
 //#define FENG_QUEUEPACKAGEPUSH_ADDR 0x005AC340
 //#define FENG_QUEUEPACKAGESWITCH_ADDR FENG_QUEUEPACKAGEPUSH_ADDR
@@ -160,7 +183,12 @@
 #define GMW2GAME_AWARDCASH_ADDR 0x005FED00
 #define GMW2GAME_OBJ_ADDR 0x00D9B940
 
+// Typedef for the original frontend render function
+typedef void(__thiscall* FEManagerRenderFn)(void* ThisFE);
+// Extern declaration for the global function pointer
+extern FEManagerRenderFn FEManager_Render_Original;
 
+void FEManager_Render_Hook();
 void ReShade_EntryPoint();
 void __stdcall MainService_Hook();
 void MotionBlur_EntryPoint();

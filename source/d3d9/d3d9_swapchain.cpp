@@ -236,25 +236,6 @@ void Direct3DSwapChain9::on_reset(bool resize)
 	_is_initialized = false;
 }
 
-// NFS variant
-void Direct3DSwapChain9::on_nfs_present(
-	const RECT *pSourceRect,
-	const RECT *pDestRect,
-	HWND hDestWindowOverride,
-	const RGNDATA *pDirtyRegion)
-{
-	// Custom logic for rendering ReShade effects before FE
-	// reshade::log::message(reshade::log::level::debug, "Rendering ReShade effects before FE.");
-
-	// Optionally, toggle motion blur or other settings
-#ifdef GAME_UC
-	// bMotionBlur = true; // Example: Enable motion blur
-#endif
-
-	// Call the regular on_present for ReShade effects
-	this->on_present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-}
-
 void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] const RECT *dest_rect, HWND window_override, [[maybe_unused]] const RGNDATA *dirty_region)
 {
 	assert(_is_initialized);
