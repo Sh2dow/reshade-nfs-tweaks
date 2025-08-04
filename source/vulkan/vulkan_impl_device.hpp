@@ -9,6 +9,7 @@
 #pragma warning(disable: 4100 4127 4324 4505 4189) // Disable a bunch of warnings thrown by VMA code
 #include <vk_mem_alloc.h>
 #pragma warning(pop)
+#include <functional>
 #include <vk_layer_dispatch_table.h>
 
 #include "reshade_api_object_impl.hpp"
@@ -26,6 +27,16 @@ namespace reshade::vulkan
 		friend class command_queue_impl;
 
 	public:
+#ifdef GAME_UC
+		api::resource_view _last_render_targets[8] = {};
+		uint32_t _last_render_target_count = 0;
+		api::resource_view _last_known_backbuffer = {};
+
+		std::function<void(uint32_t, const reshade::api::resource_view *)> rtv_tracker = nullptr;
+		// Inside vulkan_impl_device.hpp (public section)
+		void set_rtv_tracker(std::function<void(uint32_t, const reshade::api::resource_view *)> tracker);
+#endif
+
 		device_impl(
 			VkDevice device,
 			VkPhysicalDevice physical_device,

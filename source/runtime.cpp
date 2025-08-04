@@ -259,9 +259,9 @@ bool reshade::runtime::on_init()
 {
 	assert(!_is_initialized);
 
-#ifdef  GAME_UC
-	if (!g_runtime_nfs)
-		g_runtime_nfs = this;
+#ifdef NFS_MULTITHREAD
+	if (!g_nfs_runtime)
+		g_nfs_runtime = this;
 
 	// if (auto *impl = reinterpret_cast<d3d9::device_impl *>(g_pd3dDevice))
 	// 	impl->_runtime = this;
@@ -505,6 +505,29 @@ bool reshade::runtime::on_init()
 		log::message(log::level::info, "✅ Created _scene_texture_output_rtv: format=0x%X, handle=%p",
 			static_cast<uint32_t>(_back_buffer_format), _scene_texture_output_rtv.handle);
 
+		// 4b. Optional: Create SRGB view of scene output (for ReShade GUI / tone mapping)
+		if (_scene_texture_output_srgb.handle != 0)
+			_device->destroy_resource_view(_scene_texture_output_srgb);
+		_scene_texture_output_srgb = {};
+
+		const api::format srgb_format = reshade::api::format_to_default_typed(_back_buffer_format, 1); // 1 = SRGB type
+
+		if (srgb_format != _back_buffer_format &&
+			!_device->create_resource_view(
+				_scene_texture_output,
+				api::resource_usage::render_target,
+				api::resource_view_desc(srgb_format),
+				&_scene_texture_output_srgb))
+		{
+			log::message(log::level::warning, "⚠️ Could not create _scene_texture_output_srgb with format 0x%X", static_cast<uint32_t>(srgb_format));
+			_scene_texture_output_srgb = {}; // Fallback
+		}
+		else
+		{
+			log::message(log::level::info, "✅ Created _scene_texture_output_srgb: format=0x%X, handle=%p",
+				static_cast<uint32_t>(srgb_format), _scene_texture_output_srgb.handle);
+		}
+
 		// 5. Create SRV from input
 		if (_scene_texture_input_srv.handle == 0 &&
 			!_device->create_resource_view(_scene_texture_input,
@@ -521,10 +544,39 @@ bool reshade::runtime::on_init()
 		// 6. Reset tracking
 		_last_scene_resource = {};
 
-		// 7. Hook external RTV tracker
-		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
-			track_render_targets_if_external(count, rtvs);
-		};
+		// 7. Setup backbuffer snapshot index for pre-FE effect rendering
+		// const uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) +
+		// 								   _swapchain->get_current_back_buffer_index() * 2;
+		//
+		// backbuffer = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+
+		if (_nfs_backbuffer_snapshot.handle == 0)
+		{
+			if (!_device->create_resource_view(
+					backbuffer,
+					api::resource_usage::copy_source, // or shader_resource
+					api::resource_view_desc(_back_buffer_format),
+					&_nfs_backbuffer_snapshot))
+			{
+				reshade::log::message(log::level::error, "❌ Failed to create _nfs_backbuffer_snapshot");
+			}
+			else
+			{
+				reshade::log::message(log::level::info, "✅ Created _nfs_backbuffer_snapshot: handle=%p", _nfs_backbuffer_snapshot.handle);
+			}
+		}
+
+		// 8. Hook external RTV tracker
+
+		// D3D9 only
+		// static_cast<d3d9::device_impl *>(_device)->rtv_tracker = [this](uint32_t count, const api::resource_view *rtvs) {
+		// 	track_render_targets_if_external(count, rtvs);
+		// };
+
+		//Vulkan
+		_device->set_private_data(nfs_rtv_tracker_key,
+			reinterpret_cast<uint64_t>(&rtv_tracker_forwarder));
+
 	}
 
 	create_state_block(_device, &_app_state);
@@ -624,8 +676,20 @@ void reshade::runtime::on_reset()
 	"🔄 on_reset(): releasing _scene_texture_output_rtv = %p _scene_texture = %p (frame = %u)",
 	_scene_texture_output_rtv.handle, _scene_texture.handle, _frame_count);
 
+	// Reset RTV tracker to avoid calling into a destroyed runtime!
+	if (_device != nullptr)
+	{
+		_device->set_resource_name(reshade::api::resource { 0 }, nullptr); // Optional
+		// if (_device != nullptr)
+		// 	static_cast<reshade::vulkan::device_impl *>(_device)->rtv_tracker = nullptr; // ✅ Works now
+	}
+
 	_device->destroy_resource_view(_scene_texture_output_rtv);
 	_scene_texture_output_rtv = {};
+
+	_device->destroy_resource_view(_scene_texture_output_srgb);
+	_scene_texture_output_srgb = {};
+
 	_device->destroy_resource(_scene_texture);
 	_scene_texture = {};
 
@@ -642,6 +706,11 @@ void reshade::runtime::on_reset()
 	_empty_tex = {};
 	_device->destroy_resource_view(_empty_srv);
 	_empty_srv = {};
+
+	_nfs_backbuffer_snapshot = {};
+	_last_scene_resource = {};
+
+	_deferred_composite = false;
 
 	for (uint32_t i = 0; i < ARRAYSIZE(_effect_color_srv); ++i)
 	{
@@ -727,14 +796,50 @@ void reshade::runtime::track_render_targets_if_external(uint32_t count, const ap
 	// 	desc.texture.height);
 }
 
-void reshade::runtime::on_present()
+void reshade::runtime::on_nfs_present()
 {
-	nfs_fe_passed = false;
+	if (!_effects_enabled || !_effects_fully_initialized || _reload_remaining_effects != 0 || !_reload_create_queue.empty())
+		return;
+
+	if (_effects_rendered_this_frame)
+		return;
+
+	_effects_rendered_this_frame = true;
+
+	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
+
+	if (_scene_texture_input != 0 && _scene_texture_output_rtv != 0)
+	{
+		if (_scene_texture_input == 0 || _scene_texture_output_rtv == 0 || _nfs_backbuffer_snapshot.handle == 0)
+		{
+			reshade::log::message(log::level::debug, "⛔ Skipping on_nfs_present(): Missing resources");
+			return;
+		}
+
+		api::resource snapshot_res = _device->get_resource_from_view(_nfs_backbuffer_snapshot);
+		if (snapshot_res.handle == 0)
+		{
+			reshade::log::message(log::level::debug, "⛔ Skipping on_nfs_present(): Backbuffer snapshot resource invalid");
+			return;
+		}
+
+		// Perform the copy only if snapshot is valid
+		cmd_list->copy_resource(_scene_texture_input, snapshot_res);
+
+		// cmd_list->copy_resource(_scene_texture_input,
+		// 						_device->get_resource_from_view(_nfs_backbuffer_snapshot));
+
+		// Render to output RT (with optional SRGB if available)
+		render_effects(cmd_list, _scene_texture_output_rtv,
+					   _scene_texture_output_srgb != 0 ? _scene_texture_output_srgb : _scene_texture_output_rtv);
+
+		_deferred_composite = true;
+	}
 }
 
-void reshade::runtime::on_present_original()
+void reshade::runtime::on_present()
 {
-	if (nfs_fe_passed || !_is_initialized)
+	if (!_is_initialized)
 		return;
 
 #if RESHADE_ADDON
@@ -743,12 +848,46 @@ void reshade::runtime::on_present_original()
 
 	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
 
+	if (!_effects_rendered_this_frame)
+	{
+		cmd_list->copy_resource(_scene_texture_input,
+								_device->get_resource_from_view(_nfs_backbuffer_snapshot));
+
+		render_effects(cmd_list, _scene_texture_output_rtv,
+					   _scene_texture_output_srgb != 0 ? _scene_texture_output_srgb : _scene_texture_output_rtv);
+	}
+
+	_effects_rendered_this_frame = false;
+	_deferred_composite = false;
+
 	capture_state(cmd_list, _app_state);
 
-	uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
+	// Resolve back buffer (if MSAA or format mismatch)
+	// const uint32_t back_buffer_index = _swapchain->get_current_back_buffer_index();
+	// api::resource back_buffer_resource = _back_buffer_targets[back_buffer_index];
+	const uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) +
+								   _swapchain->get_current_back_buffer_index() * 2;
+
 	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
 
-	// Resolve MSAA back buffer if MSAA is active or copy when format conversion is required
+	if (_nfs_backbuffer_snapshot.handle == 0)
+	{
+		api::resource_view snapshot_rtv = {};
+		if (!_device->create_resource_view(
+				back_buffer_resource,
+				api::resource_usage::shader_resource, // or copy_source
+				api::resource_view_desc(_back_buffer_format),
+				&snapshot_rtv))
+		{
+			reshade::log::message(log::level::error, "❌ Failed to create _nfs_backbuffer_snapshot view");
+			return;
+		}
+
+		_nfs_backbuffer_snapshot = snapshot_rtv; // ✅ now valid
+
+		reshade::log::message(log::level::info, "✅ Assigned _nfs_backbuffer_snapshot = %p", _nfs_backbuffer_snapshot.handle);
+	}
+
 	if (_back_buffer_resolved != 0)
 	{
 		if (_back_buffer_samples == 1)

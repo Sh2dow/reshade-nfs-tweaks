@@ -2391,3 +2391,9 @@ reshade::vulkan::command_list_immediate_impl *reshade::vulkan::device_impl::get_
 			return immediate_command_list;
 	return nullptr;
 }
+
+// NFS Stuff
+void reshade::vulkan::device_impl::set_rtv_tracker(std::function<void(uint32_t, const reshade::api::resource_view *)> tracker)
+{
+	rtv_tracker = std::move(tracker);
+}

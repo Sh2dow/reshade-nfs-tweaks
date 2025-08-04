@@ -156,7 +156,7 @@
     <TargetName>ReShade32</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <TargetName>d3d9</TargetName>
+    <TargetName>ReShade32</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release-UG2|Win32'">
     <TargetName>ReShade32</TargetName>
@@ -211,8 +211,8 @@
     </PreBuildEvent>
     <PostBuildEvent>
       <Command>
-<!--        start XCOPY /Y /R "$(TargetDir)\ReShade32.dll" "c:\ProgramData\ReShade\"-->
-        start XCOPY /Y /R "$(TargetDir)\d3d9.dll" "d:\Games\NFS Undercover\"
+        start XCOPY /Y /R "$(TargetDir)\ReShade32.dll" "c:\ProgramData\ReShade\"
+<!--        start XCOPY /Y /R "$(TargetDir)\d3d9.dll" "d:\Games\NFS Undercover\"-->
       </Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>

@@ -103,6 +103,27 @@ void reshade::vulkan::command_list_impl::begin_render_pass(uint32_t count, const
 	_has_commands = true;
 	_is_in_render_pass = true;
 
+	// NFS Stuff
+	// 🔄 RTV tracking (used by NFS Pre-FE ReShade logic)
+	{
+		uint64_t fn_ptr = 0;
+		static constexpr uint8_t nfs_rtv_tracker_key[16] = {
+			'N', 'F', 'S', '_', 'R', 'T', 'V', '_', 'T', 'R', 'K', 0, 0, 0, 0, 1
+		};
+
+		_device_impl->get_private_data(nfs_rtv_tracker_key, &fn_ptr);
+
+		if (fn_ptr != 0 && count > 0 && rts != nullptr)
+		{
+			api::resource_view rtvs[8] = {};
+			for (uint32_t i = 0; i < count && i < 8; ++i)
+				rtvs[i] = rts[i].view;
+
+			auto tracker_fn = reinterpret_cast<void(*)(uint32_t, const reshade::api::resource_view *)>(fn_ptr);
+			tracker_fn(count, rtvs);
+		}
+	}
+
 	if (_device_impl->_dynamic_rendering_ext)
 	{
 		VkRenderingInfo rendering_info { VK_STRUCTURE_TYPE_RENDERING_INFO };

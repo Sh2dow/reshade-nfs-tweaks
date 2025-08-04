@@ -14,6 +14,7 @@
 #include <memory>
 #include <filesystem>
 #include <atomic>
+#include <functional>
 #include <shared_mutex>
 
 #include "dll_log.hpp"
@@ -201,18 +202,26 @@ namespace reshade
 
 		void reload_effect_next_frame(const char *effect_name) final;
 		void track_render_targets_if_external(uint32_t count, const api::resource_view* rtvs);
+		reshade::api::resource_view get_rtv_from_last_scene_resource() const;
+		bool are_effects_ready() const;
 
 		// NFS Stuff
-		void on_present_original();
+		virtual void on_nfs_present();
+		api::resource_view _nfs_backbuffer_snapshot = {};
+		// void on_present_original();
 		std::array<api::resource_view, 8> _last_bound_rtvs;
 		api::resource _last_scene_resource = {};
 
 		api::resource_view _effect_color_srv[2] = {};
 
-		bool nfs_fe_passed;
+		bool _deferred_composite;
+		bool _effects_fully_initialized;
+		bool get_effects_rendered_this_frame() const {return _effects_rendered_this_frame;}
+		void set_effects_rendered_this_frame(bool value) {_effects_rendered_this_frame = value;}
 		bool get_is_in_present_call() const { return _is_in_present_call; }
 		bool get_is_initialized() const { return _is_initialized; }
 		uint64_t get_frame_count() const { return _frame_count; }
+		api::command_queue *const get_graphics_queue() const { return  _graphics_queue;}
 
 		api::resource _scene_texture = {};
 
@@ -223,6 +232,7 @@ namespace reshade
 		// Offscreen target for rendering
 		api::resource _scene_texture_output = {};
 		api::resource_view _scene_texture_output_rtv = {};
+		api::resource_view _scene_texture_output_srgb = {};
 
 		// Optional depth (if you plan to expand)
 		api::resource_view _scene_depth_texture = {};
@@ -233,6 +243,8 @@ namespace reshade
 #ifdef GAME_UC
 		bool bMotionBlur;
 		bool g_force_fe_present_pass;
+		bool on_nfs_present_requested;
+		bool _is_rendering_pre_ui;
 #endif
 
 	private:
@@ -612,6 +624,14 @@ namespace reshade
 	template <> void runtime::set_uniform_value<int32_t>(uniform &variable, const int32_t *values, size_t count, size_t array_index);
 	template <> void runtime::set_uniform_value<uint32_t>(uniform &variable, const uint32_t *values, size_t count, size_t array_index);
 
-	inline runtime *g_runtime_nfs = nullptr;
+	static constexpr uint8_t nfs_rtv_tracker_key[16] = {
+		'N', 'F', 'S', '_', 'R', 'T', 'V', '_', 'T', 'R', 'K', 0, 0, 0, 0, 1
+	};
+	inline runtime *g_nfs_runtime = nullptr;
 	inline bool g_force_custom_fe_render_pass;
+	inline void rtv_tracker_forwarder(uint32_t count, const reshade::api::resource_view *rtvs)
+	{
+		if (g_nfs_runtime != nullptr)
+			g_nfs_runtime->track_render_targets_if_external(count, rtvs);
+	}
 }

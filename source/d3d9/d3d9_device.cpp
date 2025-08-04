@@ -2853,7 +2853,7 @@ void __declspec(naked) MotionBlur_EntryPoint()
 }
 #endif
 
-void ReShade_Hook()
+void ReShade_Hook_D3D9()
 {
 	// reshade::log::message(reshade::log::level::info, "🎯 ReShade_Hook(): Entered.");
 
@@ -2862,27 +2862,27 @@ void ReShade_Hook()
 		return;
 
 	// ✅ Run this BEFORE the frontend UI renders
-	if (reshade::g_runtime_nfs && reshade::g_runtime_nfs->get_is_initialized())
+	if (reshade::g_nfs_runtime && reshade::g_nfs_runtime->get_is_initialized())
 	{
 		g_pd3dDevice->rt_initialized_once = true;
 
 		// reshade::log::message(reshade::log::level::debug, "🎯 on_nfs_present_Hook(): Entered. Frame=%llu",
-		//                       reshade::g_runtime_nfs->get_frame_count());
+		//                       reshade::g_nfs_runtime->get_frame_count());
 
-		if (!reshade::g_runtime_nfs->get_is_in_present_call())
+		if (!reshade::g_nfs_runtime->get_is_in_present_call())
 		{
 			IDirect3DSurface9* game_rt_surface = nullptr;
 			if (SUCCEEDED(g_pd3dDevice->GetRenderTarget(0, &game_rt_surface)) && game_rt_surface != nullptr)
 			{
 				reshade::api::resource scene_resource = {reinterpret_cast<uintptr_t>(game_rt_surface)};
 
-				reshade::g_runtime_nfs->_last_scene_resource = scene_resource;
+				reshade::g_nfs_runtime->_last_scene_resource = scene_resource;
 
-				reshade::g_runtime_nfs->get_device()->create_resource_view(
+				reshade::g_nfs_runtime->get_device()->create_resource_view(
 					scene_resource,
 					reshade::api::resource_usage::shader_resource,
 					reshade::api::resource_view_desc(reshade::api::format::unknown),
-					&reshade::g_runtime_nfs->_effect_color_srv[0]);
+					&reshade::g_nfs_runtime->_effect_color_srv[0]);
 
 				// reshade::log::message(reshade::log::level::info,
 				//                       "✅ ReShade_Hook: Captured game RT = %016llx", scene_resource.handle);
@@ -2896,11 +2896,37 @@ void ReShade_Hook()
 			}
 
 #ifdef GAME_UC
-			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
+			bGlobalMotionBlur = reshade::g_nfs_runtime->bMotionBlur;
 #endif
-			reshade::g_runtime_nfs->on_present_original();
-			reshade::g_runtime_nfs->nfs_fe_passed = true;
+			reshade::g_nfs_runtime->on_nfs_present();
+			reshade::g_nfs_runtime->_deferred_composite = true;
 		}
+	}
+}
+
+static bool _initialized_once;
+void ReShade_Hook()
+{
+	auto *runtime = reshade::g_nfs_runtime;
+
+	// Initialize once only when runtime is ready
+	if (!_initialized_once)
+	{
+		if (!runtime || !runtime->get_is_initialized())
+			return;
+
+		_initialized_once = true;
+	}
+
+	// ✅ Ensure we are outside of on_present to avoid re-entry
+	if (runtime && runtime->get_is_initialized() && !runtime->get_is_in_present_call())
+	{
+#ifdef GAME_UC
+		bGlobalMotionBlur = runtime->bMotionBlur;
+#endif
+
+		// Call the early effect pass
+		runtime->on_nfs_present();
 	}
 }
 
