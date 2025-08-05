@@ -2899,7 +2899,7 @@ void ReShade_Hook_D3D9()
 			bGlobalMotionBlur = reshade::g_runtime_nfs->bMotionBlur;
 #endif
 			reshade::g_runtime_nfs->on_nfs_present();
-			reshade::g_runtime_nfs->_deferred_composite = true;
+			reshade::g_runtime_nfs->nfs_fe_passed = true;
 		}
 	}
 }
@@ -2919,14 +2919,22 @@ void ReShade_Hook()
 	}
 
 	// ✅ Ensure we are outside of on_present to avoid re-entry
-	if (runtime && runtime->get_is_initialized() && !runtime->get_is_in_present_call())
+	if (runtime->get_effects_enabled()
+		&& !runtime->get_is_in_present_call()
+		&& !runtime-> are_effects_ready()
+		&& runtime->has_valid_back_buffer()
+		&& runtime->get_frame_count() > 10
+		)
 	{
+		std::lock_guard<std::mutex> lock(runtime->_nfs_mutex);
+
 #ifdef GAME_UC
 		bGlobalMotionBlur = runtime->bMotionBlur;
 #endif
 
 		// Call the early effect pass
-		runtime->on_nfs_present();
+		reshade::g_runtime_nfs->on_nfs_present();
+		reshade::g_runtime_nfs->nfs_fe_passed = true;
 	}
 }
 

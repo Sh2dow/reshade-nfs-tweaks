@@ -344,8 +344,23 @@ bool reshade::runtime::on_init()
 			sampler_desc.address_w = api::texture_address_mode::clamp;
 
 			api::pipeline_layout_param layout_params[2];
-			layout_params[0] = api::descriptor_range { 0, 0, 0, 1, api::shader_stage::all, 1, api::descriptor_type::sampler };
-			layout_params[1] = api::descriptor_range { 0, 0, 0, 1, api::shader_stage::all, 1, api::descriptor_type::shader_resource_view };
+			layout_params[0] = api::descriptor_range {
+				0, // Set index = 0
+				0, // Binding index = 0 (for the sampler)
+				0, 1, // Array offset, count = 1
+				api::shader_stage::pixel, // Stage visibility
+				1, // Descriptor count = 1
+				api::descriptor_type::sampler // Type = sampler
+			};
+
+			layout_params[1] = api::descriptor_range {
+				0, // Set index = 0 (same set)
+				1, // Binding index = 1 (for the SRV)
+				0, 1, // Array offset, count = 1
+				api::shader_stage::pixel, // Stage visibility
+				1, // Descriptor count = 1
+				api::descriptor_type::shader_resource_view // Type = SRV
+			};
 
 			const resources::data_resource vs = resources::load_data_resource(IDR_FULLSCREEN_VS);
 			const resources::data_resource ps = resources::load_data_resource(IDR_COPY_PS);
@@ -541,23 +556,91 @@ bool reshade::runtime::on_init()
 		log::message(log::level::info, "✅ Created _scene_texture_input_srv: format=0x%X, handle=%p",
 			static_cast<uint32_t>(input_desc.texture.format), _scene_texture_input_srv.handle);
 
+		// 5b. Create SRV from scene output (for compositing)
+		if (_scene_texture_output_srv.handle != 0) {
+			const api::resource srv_res = _device->get_resource_from_view(_scene_texture_output_srv);
+			const api::resource_desc srv_desc = _device->get_resource_desc(srv_res);
+			reshade::log::message(log::level::info, "✅ Created _scene_texture_output_srv: width=%u height=%u format=0x%X usage=0x%X",
+				srv_desc.texture.width, srv_desc.texture.height,
+				static_cast<uint32_t>(srv_desc.texture.format),
+				static_cast<uint32_t>(srv_desc.usage));
+			_device->destroy_resource_view(_scene_texture_output_srv);
+		}
+		_scene_texture_output_srv = {};
+
+		// Get the actual format of _scene_texture_output
+		const api::format output_format = _device->get_resource_desc(_scene_texture_output).texture.format;
+
+		if (!_device->create_resource_view(
+			_scene_texture_output,
+			api::resource_usage::shader_resource,
+			api::resource_view_desc(output_format), // ✅ safe: matches actual resource format
+			&_scene_texture_output_srv))
+		{
+			reshade::log::message(log::level::error, "❌ Failed to create _scene_texture_output_srv in on_init()");
+			goto exit_failure;
+		}
+		log::message(log::level::info, "✅ Created _scene_texture_output_srv: format=0x%X, handle=%p",
+			static_cast<uint32_t>(_back_buffer_format), _scene_texture_output_srv.handle);
+
 		// 6. Reset tracking
 		_last_scene_resource = {};
 
-		// 7. Setup backbuffer snapshot index for pre-FE effect rendering
-		if (_nfs_backbuffer_snapshot == 0)
+		// 7. Setup backbuffer snapshot SRV + RTV for pre-FE effect rendering
+		if (_nfs_backbuffer_snapshot.handle == 0)
 		{
-			if (!_device->create_resource_view(
-					backbuffer,
-					api::resource_usage::copy_source, // or shader_resource if needed
-					api::resource_view_desc(_back_buffer_format), // or {} if unsure
-					&_nfs_backbuffer_snapshot))
+			const uint32_t back_buffer_index = _swapchain->get_current_back_buffer_index();
+			const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+
+			api::resource_desc desc = _device->get_resource_desc(back_buffer_resource);
+			desc.usage = api::resource_usage::copy_dest |
+			             api::resource_usage::copy_source |
+			             api::resource_usage::render_target |
+			             api::resource_usage::shader_resource;
+
+			if (_device->create_resource(desc, nullptr, api::resource_usage::copy_dest, &_nfs_backbuffer_snapshot))
 			{
-				reshade::log::message(log::level::error, "❌ Failed to create _nfs_backbuffer_snapshot");
+				reshade::log::message(log::level::info,
+					"✅ Created _nfs_backbuffer_snapshot: handle=%016" PRIx64,
+					_nfs_backbuffer_snapshot.handle);
+
+				// Create SRV
+				if (!_device->create_resource_view(
+						_nfs_backbuffer_snapshot,
+						api::resource_usage::shader_resource,
+						api::resource_view_desc(desc.texture.format),
+						&_nfs_backbuffer_snapshot_srv))
+				{
+					reshade::log::message(log::level::error,
+						"❌ Failed to create SRV for _nfs_backbuffer_snapshot");
+				}
+				else
+				{
+					reshade::log::message(log::level::info,
+						"✅ Created _nfs_backbuffer_snapshot_srv: format=0x%X, handle=%016" PRIx64,
+						static_cast<uint32_t>(desc.texture.format), _nfs_backbuffer_snapshot_srv.handle);
+				}
+
+				// Create RTV
+				if (!_device->create_resource_view(
+						_nfs_backbuffer_snapshot,
+						api::resource_usage::render_target,
+						api::resource_view_desc(desc.texture.format),
+						&_nfs_backbuffer_snapshot_rtv))
+				{
+					reshade::log::message(log::level::error,
+						"❌ Failed to create RTV for _nfs_backbuffer_snapshot");
+				}
+				else
+				{
+					reshade::log::message(log::level::info,
+						"✅ Created _nfs_backbuffer_snapshot_rtv: format=0x%X, handle=%016" PRIx64,
+						static_cast<uint32_t>(desc.texture.format), _nfs_backbuffer_snapshot_rtv.handle);
+				}
 			}
 			else
 			{
-				reshade::log::message(log::level::info, "✅ Created _nfs_backbuffer_snapshot: handle=%p", _nfs_backbuffer_snapshot.handle);
+				reshade::log::message(log::level::error, "❌ Failed to create _nfs_backbuffer_snapshot");
 			}
 		}
 
@@ -570,9 +653,12 @@ bool reshade::runtime::on_init()
 		// g_nfs_rtv_tracker = &rtv_tracker_forwarder;
 
 		//Vulkan
-
 		_device->set_private_data(nfs_rtv_tracker_key,
 			reinterpret_cast<uint64_t>(&rtv_tracker_forwarder));
+
+		// _nfs_scene_ready = false;
+		// _effects_rendered_this_frame = false;
+		// nfs_fe_passed = false;
 
 	}
 
@@ -681,6 +767,15 @@ void reshade::runtime::on_reset()
 		// 	static_cast<reshade::vulkan::device_impl *>(_device)->rtv_tracker = nullptr; // ✅ Works now
 	}
 
+	_device->destroy_resource_view(_nfs_backbuffer_snapshot_srv);
+	_device->destroy_resource_view(_nfs_backbuffer_snapshot_rtv);
+	_device->destroy_resource(_nfs_backbuffer_snapshot);
+	_device->destroy_resource(_last_scene_resource);
+	_nfs_backbuffer_snapshot = {};
+	_nfs_backbuffer_snapshot_srv = {};
+	_nfs_backbuffer_snapshot_rtv = {};
+	_last_scene_resource = {};
+
 	_device->destroy_resource_view(_scene_texture_output_rtv);
 	_scene_texture_output_rtv = {};
 
@@ -693,6 +788,9 @@ void reshade::runtime::on_reset()
 	_device->destroy_resource_view(_scene_texture_input_srv);
 	_scene_texture_input_srv = {};
 
+	_device->destroy_resource_view(_scene_texture_output_srv);
+	_scene_texture_output_srv = {};
+
 	_device->destroy_resource(_scene_texture_input);
 	_scene_texture_input = {};
 
@@ -704,10 +802,7 @@ void reshade::runtime::on_reset()
 	_device->destroy_resource_view(_empty_srv);
 	_empty_srv = {};
 
-	_nfs_backbuffer_snapshot = {};
-	_last_scene_resource = {};
-
-	_deferred_composite = false;
+	// _deferred_composite = false;
 
 	if (_device->get_api() == api::device_api::d3d9)
 		static_cast<d3d9::device_impl *>(_device)->rtv_tracker = nullptr;
@@ -803,20 +898,605 @@ void reshade::runtime::track_render_targets_if_external(uint32_t count, const ap
 	// 	desc.texture.height);
 }
 
+bool reshade::runtime::are_effects_ready() const
+{
+	for (const auto &tech : _techniques)
+	{
+		if (!tech.enabled)
+			continue;
+
+		if (tech.permutations.empty())
+			return false;
+
+		const auto &perm = tech.permutations[0];
+		if (perm.passes.empty())
+			return false;
+
+		for (const auto &pass : perm.passes)
+		{
+			if (pass.pipeline == 0)
+				return false;
+		}
+
+		const effect &e = _effects[tech.effect_index];
+		if (!e.compiled || !e.created)
+			return false;
+	}
+	return true;
+}
+
 void reshade::runtime::on_nfs_present()
 {
-	if (!_is_initialized || !_effects_enabled || is_loading())
+	// std::lock_guard<std::mutex> lock(_nfs_mutex);
+
+	// Already flagged this frame? Don't do it twice
+	if (_nfs_scene_ready && _nfs_backbuffer_snapshot_srv.handle != 0)
 		return;
 
-	std::lock_guard<std::mutex> lock(_nfs_mutex);
-	const uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) +
-		_swapchain->get_current_back_buffer_index() * 2;
+	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
+	capture_state(cmd_list, _app_state);
 
-	_nfs_backbuffer_snapshot = _back_buffer_targets[back_buffer_index];
-	_nfs_scene_ready = true;
+	// Ensure snapshot buffer exists
+	if (_nfs_backbuffer_snapshot.handle == 0)
+	{
+		api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[0]);
+		if (back_buffer_resource.handle == 0)
+			return; // Skip if back buffer is not available
+
+		api::resource_desc back_desc = _device->get_resource_desc(back_buffer_resource);
+		back_desc.usage |= api::resource_usage::copy_dest | api::resource_usage::shader_resource | api::resource_usage::render_target;
+
+		if (!_device->create_resource(back_desc, nullptr, api::resource_usage::copy_dest, &_nfs_backbuffer_snapshot))
+		{
+			reshade::log::message(log::level::error, "❌ Failed to allocate _nfs_backbuffer_snapshot");
+			return;
+		}
+	}
+
+	// Get resolved or default back buffer
+	api::resource source_resource = (_back_buffer_resolved != 0)
+		? _device->get_resource_from_view(_back_buffer_targets[1])
+		: _device->get_resource_from_view(_back_buffer_targets[0]);
+
+	if (source_resource.handle == 0)
+		return;
+
+	cmd_list->barrier(source_resource, api::resource_usage::present, api::resource_usage::copy_source);
+	cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::undefined, api::resource_usage::copy_dest);
+
+	cmd_list->copy_texture_region(source_resource, 0, nullptr, _nfs_backbuffer_snapshot, 0, nullptr);
+
+	cmd_list->barrier(_nfs_backbuffer_snapshot, api::resource_usage::copy_dest, api::resource_usage::shader_resource);
+
+	// Update SRV if needed (RTV created later in on_present_clean)
+	if (_nfs_backbuffer_snapshot_srv.handle == 0 ||
+		_device->get_resource_from_view(_nfs_backbuffer_snapshot_srv) != _nfs_backbuffer_snapshot)
+	{
+		api::format fmt = _device->get_resource_desc(_nfs_backbuffer_snapshot).texture.format;
+
+		if (!_device->create_resource_view(
+			_nfs_backbuffer_snapshot,
+			api::resource_usage::shader_resource,
+			api::resource_view_desc(fmt),
+			&_nfs_backbuffer_snapshot_srv))
+		{
+			reshade::log::message(log::level::error, "❌ Failed to create SRV for snapshot");
+		}
+	}
+	apply_state(cmd_list, _app_state);
+
+	// _graphics_queue->flush_immediate_command_list();
+
+	// ⚠️ DO NOT set _nfs_scene_ready here. Only in on_present_clean
+	if (pre_fe_debug)
+	{
+		reshade::log::message(log::level::debug, "✅ on_nfs_present(): snapshot captured, frame = %llu", _frame_count);
+	}
 }
 
 void reshade::runtime::on_present()
+{
+	reshade::log::message(log::level::debug, "on_present(): start frame %llu", _frame_count);
+	_nfs_scene_ready = true;
+
+	on_present_clean();
+
+	reshade::log::message(log::level::debug, "on_present(): EXIT — _effects_rendered_this_frame = %d",
+		_effects_rendered_this_frame);
+
+	_nfs_scene_ready = false;
+	// _effects_rendered_this_frame = false; // ✅ reset here too
+
+	// ✅ Only clear if you're recreating the snapshot every frame
+	// _nfs_backbuffer_snapshot.handle = 0;
+	// _nfs_backbuffer_snapshot_srv.handle = 0;
+}
+
+void reshade::runtime::on_present_clean(){
+	if (!_is_initialized)
+		return;
+
+#if RESHADE_ADDON
+	_is_in_present_call = true;
+#endif
+
+	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
+
+	capture_state(cmd_list, _app_state);
+
+	if (pre_fe_debug)
+	{
+		reshade::log::message(log::level::debug,
+			"📐 snapshot_fmt=%d size=%ux%u | output_fmt=%d size=%ux%u",
+			_device->get_resource_desc(_nfs_backbuffer_snapshot).texture.format,
+			_device->get_resource_desc(_nfs_backbuffer_snapshot).texture.width,
+			_device->get_resource_desc(_nfs_backbuffer_snapshot).texture.height,
+			_device->get_resource_desc(_scene_texture_output).texture.format,
+			_device->get_resource_desc(_scene_texture_output).texture.width,
+			_device->get_resource_desc(_scene_texture_output).texture.height);
+	}
+
+	// Ensure _nfs_backbuffer_snapshot exists (only allocate once)
+	if (_nfs_backbuffer_snapshot.handle == 0)
+	{
+		api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[0]);
+		api::resource_desc back_desc = _device->get_resource_desc(back_buffer_resource);
+		back_desc.usage |= api::resource_usage::copy_dest | api::resource_usage::shader_resource | api::resource_usage::render_target;
+
+		if (_device->create_resource(back_desc, nullptr, api::resource_usage::copy_dest, &_nfs_backbuffer_snapshot))
+		{
+			reshade::log::message(log::level::info, "✅ Created _nfs_backbuffer_snapshot: handle=%016" PRIx64, _nfs_backbuffer_snapshot.handle);
+		}
+		else
+		{
+			reshade::log::message(log::level::error, "❌ Failed to allocate _nfs_backbuffer_snapshot");
+		}
+	}
+
+	std::lock_guard<std::mutex> lock(_nfs_mutex);
+
+	// Select back buffer resource to use for rendering
+	const uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
+	api::resource back_buffer_resource = (_back_buffer_resolved != 0)
+		? _back_buffer_resolved
+		: _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
+
+	// ✅ Validate SRV/RTV for snapshot
+	if (_nfs_backbuffer_snapshot.handle != 0)
+	{
+		// Update SRV if needed
+		if (_nfs_backbuffer_snapshot_srv.handle == 0 ||
+			_device->get_resource_from_view(_nfs_backbuffer_snapshot_srv) != _nfs_backbuffer_snapshot)
+		{
+			api::format fmt = _device->get_resource_desc(_nfs_backbuffer_snapshot).texture.format;
+			if (_device->create_resource_view(
+					_nfs_backbuffer_snapshot,
+					api::resource_usage::shader_resource,
+					api::resource_view_desc(fmt),
+					&_nfs_backbuffer_snapshot_srv))
+			{
+				reshade::log::message(log::level::info, "✅ Updated _nfs_backbuffer_snapshot_srv: %016" PRIx64, _nfs_backbuffer_snapshot_srv.handle);
+			}
+			else
+			{
+				reshade::log::message(log::level::error, "❌ Failed to create SRV for snapshot");
+			}
+		}
+
+		// Update RTV if needed
+		if (_nfs_backbuffer_snapshot_rtv.handle == 0 ||
+			_device->get_resource_from_view(_nfs_backbuffer_snapshot_rtv) != _nfs_backbuffer_snapshot)
+		{
+			api::format fmt = _device->get_resource_desc(_nfs_backbuffer_snapshot).texture.format;
+			if (_device->create_resource_view(
+					_nfs_backbuffer_snapshot,
+					api::resource_usage::render_target,
+					api::resource_view_desc(fmt),
+					&_nfs_backbuffer_snapshot_rtv))
+			{
+				reshade::log::message(log::level::info, "✅ Updated _nfs_backbuffer_snapshot_rtv: %016" PRIx64, _nfs_backbuffer_snapshot_rtv.handle);
+			}
+			else
+			{
+				reshade::log::message(log::level::error, "❌ Failed to create RTV for snapshot");
+			}
+		}
+	}
+
+	// ✅ Set scene ready flag only when both SRV + RTV are created
+	if (_nfs_backbuffer_snapshot_srv.handle != 0 && _nfs_backbuffer_snapshot_rtv.handle != 0)
+	{
+		_nfs_scene_ready = true;
+	}
+
+	reshade::log::message(log::level::debug, "✅ on_nfs_present(): snapshot scheduled, frame = %llu", _frame_count);
+
+	// Resolve MSAA back buffer if MSAA is active or copy when format conversion is required
+	if (_back_buffer_resolved != 0 && !_nfs_scene_ready)
+	{
+		if (_back_buffer_samples == 1)
+		{
+			cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::copy_source);
+			cmd_list->copy_texture_region(back_buffer_resource, 0, nullptr, _back_buffer_resolved, 0, nullptr);
+			cmd_list->barrier(_back_buffer_resolved, api::resource_usage::copy_dest, api::resource_usage::render_target);
+		}
+		else
+		{
+			cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::resolve_source);
+			cmd_list->resolve_texture_region(back_buffer_resource, 0, nullptr, _back_buffer_resolved, 0, 0, 0, 0, _back_buffer_format);
+			cmd_list->barrier(_back_buffer_resolved, api::resource_usage::resolve_dest, api::resource_usage::render_target);
+		}
+	}
+
+	// Lock input so it cannot be modified by other threads while we are reading it here
+	std::unique_lock<std::recursive_mutex> input_lock;
+	if (_input != nullptr)
+		input_lock = _input->lock();
+
+	update_effects();
+
+	_current_time = std::chrono::system_clock::now();
+
+	if (_should_save_screenshot && _screenshot_save_before && _effects_enabled && !_effects_rendered_this_frame)
+		save_screenshot("Before");
+
+	if (!is_loading() && !_techniques.empty())
+	{
+		if (_back_buffer_resolved != 0)
+		{
+			runtime::render_effects(cmd_list, _back_buffer_targets[0], _back_buffer_targets[1]);
+		}
+		else
+		{
+#ifdef NFS_MULTITHREAD
+			// ✅ Render from pre-FE snapshot → offscreen texture → backbuffer
+			if (_nfs_scene_ready)
+			{
+				if (pre_fe_debug)
+					reshade::log::message(log::level::debug, "🎯 Using pre-FE snapshot as input for rendering");
+
+				cmd_list->barrier(_scene_texture_output, api::resource_usage::render_target, api::resource_usage::shader_resource);
+				cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::render_target);
+
+				// ✅ Construct proper render target descriptor
+				api::render_pass_render_target_desc rt_desc = {};
+				rt_desc.view = _back_buffer_targets[back_buffer_index];
+				rt_desc.load_op = api::render_pass_load_op::load;
+				rt_desc.store_op = api::render_pass_store_op::store;
+				rt_desc.clear_color[0] = 0.0f;
+				rt_desc.clear_color[1] = 0.0f;
+				rt_desc.clear_color[2] = 0.0f;
+				rt_desc.clear_color[3] = 0.0f;
+
+				cmd_list->begin_render_pass(1, &rt_desc);
+
+				// Viewport + scissor
+				const api::viewport viewport = { 0.0f, 0.0f, static_cast<float>(_width), static_cast<float>(_height), 0.0f, 1.0f };
+				cmd_list->bind_viewports(0, 1, &viewport);
+				const api::rect scissor_rect = { 0, 0, static_cast<int32_t>(_width), static_cast<int32_t>(_height) };
+				cmd_list->bind_scissor_rects(0, 1, &scissor_rect);
+
+				// Composite
+				const api::resource srv_res = _device->get_resource_from_view(_scene_texture_output_srv);
+
+				if (_scene_texture_output_srv.handle == 0 || srv_res.handle == 0)
+				{
+					reshade::log::message(log::level::warning,
+						"⚠️ Skipping pre-FE composite: _scene_texture_output_srv not ready or view invalid.");
+				}
+				else
+				{
+					// Optional: validate resource desc
+					const api::resource_desc desc = _device->get_resource_desc(srv_res);
+					if ((desc.usage & api::resource_usage::shader_resource) == 0)
+					{
+						reshade::log::message(log::level::error,
+							"❌ _scene_texture_output_srv points to a resource that is not shader-readable (usage=0x%X).", desc.usage);
+					}
+					else
+					{
+						// ✅ Composite from _scene_texture_output_srv → back buffer
+						cmd_list->bind_pipeline(api::pipeline_stage::all_graphics, _copy_pipeline);
+
+						const auto srv_desc = _device->get_resource_desc(srv_res);
+
+						reshade::log::message(log::level::info,
+							"_scene_texture_output_srv = %" PRIx64 ", resource = %" PRIx64 ", usage = 0x%X, width = %u, height = %u",
+							_scene_texture_output_srv.handle,
+							srv_res.handle,
+							srv_desc.usage,
+							srv_desc.texture.width,
+							srv_desc.texture.height);
+
+						reshade::log::message(log::level::info, "⚠️ DRAW: using _scene_texture_output_srv.handle = %llX", _scene_texture_output_srv.handle);
+						reshade::log::message(log::level::info, "⚠️ LAYOUT: _copy_pipeline_layout.handle = %llX", _copy_pipeline_layout.handle);
+
+						cmd_list->push_descriptors(api::shader_stage::pixel, _copy_pipeline_layout, 0, api::descriptor_table_update {
+							{}, 0, 0, 1, api::descriptor_type::sampler, &_copy_sampler_state
+						});
+						cmd_list->push_descriptors(api::shader_stage::pixel, _copy_pipeline_layout, 0, api::descriptor_table_update {
+							{}, 0, 1, 1, api::descriptor_type::shader_resource_view, &_scene_texture_output_srv
+						});
+
+						cmd_list->draw(3, 1, 0, 0);
+					}
+				}
+
+				cmd_list->end_render_pass();
+
+				cmd_list->barrier(back_buffer_resource, api::resource_usage::render_target, api::resource_usage::present);
+			}
+			else
+			{
+				reshade::log::message(log::level::warning, "⚠️ Skipping pre-FE effect rendering — snapshot SRV/RTV invalid or not ready.");
+			}
+#else
+			cmd_list->barrier(back_buffer_resource, api::resource_usage::present, api::resource_usage::render_target);
+			runtime::render_effects(cmd_list, _back_buffer_targets[back_buffer_index], _back_buffer_targets[back_buffer_index + 1]);
+			cmd_list->barrier(back_buffer_resource, api::resource_usage::render_target, api::resource_usage::present);
+#endif
+		}
+	}
+
+	if (_should_save_screenshot)
+		save_screenshot(_screenshot_save_before ? "After" : std::string_view());
+
+	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+	*drawHUDAddr = drawFrontEnd;
+
+	_frame_count++;
+	const auto current_time = std::chrono::high_resolution_clock::now();
+	_last_frame_duration = current_time - _last_present_time; _last_present_time = current_time;
+
+#if RESHADE_GUI
+	// Draw overlay
+	if (_is_vr)
+		draw_gui_vr();
+	else
+		draw_gui();
+
+	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture != 0 && _effects_enabled)))
+		save_screenshot("Overlay");
+#endif
+
+	// All screenshots were created at this point, so reset request
+	_should_save_screenshot = false;
+
+	// Handle keyboard shortcuts
+	if (!_ignore_shortcuts && _input != nullptr)
+	{
+		if (_input->is_key_pressed(_effects_key_data, _force_shortcut_modifiers))
+		{
+#if RESHADE_ADDON
+			if (!invoke_addon_event<addon_event::reshade_set_effects_state>(this, !_effects_enabled))
+#endif
+				_effects_enabled = !_effects_enabled;
+		}
+
+		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
+		{
+			*drawHUDAddr = _screenshot_nfs_hud;
+
+			_screenshot_count++;
+			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame
+		}
+
+		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
+		{
+			// Toggle drawFrontEnd value
+			drawFrontEnd = !drawFrontEnd;
+
+			// Update the actual memory address as well
+			*(bool *)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
+		}
+
+		// Do not allow the following shortcuts while effects are being loaded or initialized (since they affect that state)
+		if (!is_loading())
+		{
+			if (_effects_enabled && !_is_in_preset_transition)
+			{
+				for (effect &effect : _effects)
+				{
+					if (!effect.rendering)
+						continue;
+
+					for (uniform &variable : effect.uniforms)
+					{
+						if (_input->is_key_pressed(variable.toggle_key_data, _force_shortcut_modifiers))
+						{
+							assert(variable.supports_toggle_key());
+
+							// Change to next value if the associated shortcut key was pressed
+							switch (variable.type.base)
+							{
+								case reshadefx::type::t_bool:
+								{
+									bool data = false;
+									get_uniform_value(variable, &data);
+									set_uniform_value(variable, !data);
+									break;
+								}
+								case reshadefx::type::t_int:
+								case reshadefx::type::t_uint:
+								{
+									int data[4] = {};
+									get_uniform_value(variable, data, 4);
+									const std::string_view ui_items = variable.annotation_as_string("ui_items");
+									int num_items = 0;
+									for (size_t offset = 0, next; (next = ui_items.find('\0', offset)) != std::string_view::npos; offset = next + 1)
+										num_items++;
+									data[0] = (data[0] + 1 >= num_items) ? 0 : data[0] + 1;
+									set_uniform_value(variable, data, 4);
+									break;
+								}
+							}
+
+#if RESHADE_GUI
+							if (_auto_save_preset)
+								save_current_preset();
+							else
+								_preset_is_modified = true;
+#endif
+						}
+					}
+				}
+
+				for (technique &tech : _techniques)
+				{
+					if (_input->is_key_pressed(tech.toggle_key_data, _force_shortcut_modifiers))
+					{
+						if (!tech.enabled)
+							enable_technique(tech);
+						else
+							disable_technique(tech);
+
+#if RESHADE_GUI
+						if (_auto_save_preset)
+							save_current_preset();
+						else
+							_preset_is_modified = true;
+#endif
+					}
+				}
+			}
+
+			if (_input->is_key_pressed(_reload_key_data, _force_shortcut_modifiers))
+				reload_effects();
+
+			if (_input->is_key_pressed(_performance_mode_key_data, _force_shortcut_modifiers))
+			{
+				_performance_mode = !_performance_mode;
+				save_config();
+				reload_effects();
+			}
+
+			if (const bool reversed = _input->is_key_pressed(_prev_preset_key_data, _force_shortcut_modifiers);
+				reversed || _input->is_key_pressed(_next_preset_key_data, _force_shortcut_modifiers))
+			{
+				// The preset shortcut key was pressed down, so start the transition
+				if (switch_to_next_preset(_current_preset_path.parent_path(), reversed))
+					save_config();
+			}
+			else
+			{
+				for (const preset_shortcut &shortcut : _preset_shortcuts)
+				{
+					if (_input->is_key_pressed(shortcut.key_data, _force_shortcut_modifiers))
+					{
+						if (switch_to_next_preset(shortcut.preset_path))
+							save_config();
+						break;
+					}
+				}
+			}
+
+			// Continuously update preset values while a transition is in progress
+			if (_is_in_preset_transition)
+				load_current_preset();
+		}
+	}
+
+	// Stretch main render target back into MSAA back buffer if MSAA is active or copy when format conversion is required
+	if (_back_buffer_resolved != 0)
+	{
+		const api::resource resources[2] = { back_buffer_resource, _back_buffer_resolved };
+		const api::resource_usage state_old[2] = { api::resource_usage::copy_source | api::resource_usage::resolve_source, api::resource_usage::render_target };
+		const api::resource_usage state_final[2] = { api::resource_usage::present, api::resource_usage::resolve_dest };
+
+		if (_device->get_api() == api::device_api::d3d10 ||
+			_device->get_api() == api::device_api::d3d11 ||
+			_device->get_api() == api::device_api::d3d12)
+		{
+			const api::resource_usage state_new[2] = { api::resource_usage::render_target, api::resource_usage::shader_resource };
+
+			cmd_list->barrier(2, resources, state_old, state_new);
+
+			cmd_list->bind_pipeline(api::pipeline_stage::all_graphics, _copy_pipeline);
+
+			cmd_list->push_descriptors(api::shader_stage::pixel, _copy_pipeline_layout, 0, api::descriptor_table_update { {}, 0, 0, 1, api::descriptor_type::sampler, &_copy_sampler_state });
+			cmd_list->push_descriptors(api::shader_stage::pixel, _copy_pipeline_layout, 1, api::descriptor_table_update { {}, 0, 0, 1, api::descriptor_type::shader_resource_view, &_back_buffer_resolved_srv });
+
+			const api::viewport viewport = { 0.0f, 0.0f, static_cast<float>(_width), static_cast<float>(_height), 0.0f, 1.0f };
+			cmd_list->bind_viewports(0, 1, &viewport);
+			const api::rect scissor_rect = { 0, 0, static_cast<int32_t>(_width), static_cast<int32_t>(_height) };
+			cmd_list->bind_scissor_rects(0, 1, &scissor_rect);
+
+			const bool srgb_write_enable = (_back_buffer_format == api::format::r8g8b8a8_unorm_srgb || _back_buffer_format == api::format::b8g8r8a8_unorm_srgb);
+			cmd_list->bind_render_targets_and_depth_stencil(1, &_back_buffer_targets[back_buffer_index + srgb_write_enable]);
+
+			cmd_list->draw(3, 1, 0, 0);
+
+			cmd_list->barrier(2, resources, state_new, state_final);
+		}
+		else
+		{
+			const api::resource_usage state_new[2] = { api::resource_usage::copy_dest, api::resource_usage::copy_source };
+
+			cmd_list->barrier(2, resources, state_old, state_new);
+			cmd_list->copy_texture_region(_back_buffer_resolved, 0, nullptr, back_buffer_resource, 0, nullptr);
+			cmd_list->barrier(2, resources, state_new, state_final);
+		}
+	}
+
+	reshade::log::message(log::level::info, "📤 Flushing command list to GPU (post-snapshot + effects)");
+	_graphics_queue->flush_immediate_command_list();
+
+#if RESHADE_ADDON
+	invoke_addon_event<addon_event::reshade_present>(this);
+
+	_is_in_present_call = false;
+#endif
+
+	// Apply previous state from application
+	apply_state(cmd_list, _app_state);
+
+	// Update input status
+	if (_input != nullptr)
+		_input->next_frame();
+	if (_input_gamepad != nullptr)
+		_input_gamepad->next_frame();
+
+	// Save modified INI files
+	if (!ini_file::flush_cache())
+		_preset_save_successful = false;
+
+#if RESHADE_ADDON == 1
+	// Detect high network traffic
+	extern volatile long g_network_traffic;
+
+	static int cooldown = 0, traffic = 0;
+	if (cooldown-- > 0)
+	{
+		traffic += g_network_traffic > 0;
+	}
+	else
+	{
+		const bool was_enabled = addon_enabled;
+		addon_enabled = traffic < 10;
+		traffic = 0;
+		cooldown = 60;
+
+		if (addon_enabled != was_enabled)
+		{
+			if (was_enabled)
+				_backup_texture_semantic_bindings = _texture_semantic_bindings;
+
+			for (const auto &info : _backup_texture_semantic_bindings)
+			{
+				if (info.second.first == _effect_permutations[0].color_srv[0] && info.second.second == _effect_permutations[0].color_srv[1])
+					continue;
+
+				update_texture_bindings(info.first.c_str(), addon_enabled ? info.second.first : api::resource_view { 0 }, addon_enabled ? info.second.second : api::resource_view { 0 });
+			}
+		}
+	}
+
+	if (std::numeric_limits<long>::max() != g_network_traffic)
+		g_network_traffic = 0;
+#endif
+}
+
+void reshade::runtime::_on_present_clean()
 {
 	if (!_is_initialized)
 		return;
@@ -827,54 +1507,12 @@ void reshade::runtime::on_present()
 
 	api::command_list *const cmd_list = _graphics_queue->get_immediate_command_list();
 
-	// 🟢 Copy from snapshot into _scene_texture_input once per frame
-	if (_nfs_scene_ready && _nfs_backbuffer_snapshot != 0)
-	{
-		std::lock_guard<std::mutex> lock(_nfs_mutex);
-
-		const api::resource snapshot_resource = _device->get_resource_from_view(_nfs_backbuffer_snapshot);
-		cmd_list->copy_resource(_scene_texture_input, snapshot_resource);
-
-		_nfs_scene_ready = false;
-	}
-
 	capture_state(cmd_list, _app_state);
 
-	// 🧠 Use latest back buffer index
-	const uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) +
-		_swapchain->get_current_back_buffer_index() * 2;
+	uint32_t back_buffer_index = (_back_buffer_resolved != 0 ? 2 : 0) + _swapchain->get_current_back_buffer_index() * 2;
+	const api::resource back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
 
-	api::resource back_buffer_resource;
-
-	// Always use _nfs_backbuffer_snapshot if valid
-	if (_nfs_backbuffer_snapshot != 0)
-	{
-		back_buffer_resource = _device->get_resource_from_view(_nfs_backbuffer_snapshot);
-	}
-	else
-	{
-		back_buffer_resource = _device->get_resource_from_view(_back_buffer_targets[back_buffer_index]);
-
-		// 🔁 Create a new fallback snapshot view
-		std::lock_guard<std::mutex> lock(_nfs_mutex);
-
-		_device->destroy_resource_view(_nfs_backbuffer_snapshot);
-		_nfs_backbuffer_snapshot = {};
-
-		if (_device->create_resource_view(
-			back_buffer_resource,
-			api::resource_usage::copy_source,
-			api::resource_view_desc(_back_buffer_format),
-			&_nfs_backbuffer_snapshot))
-		{
-			reshade::log::message(log::level::debug, "✅ Fallback snapshot created = %p", _nfs_backbuffer_snapshot.handle);
-		}
-		else
-		{
-			reshade::log::message(log::level::error, "❌ Failed to create _nfs_backbuffer_snapshot view (fallback)");
-		}
-	}
-
+	// Resolve MSAA back buffer if MSAA is active or copy when format conversion is required
 	if (_back_buffer_resolved != 0)
 	{
 		if (_back_buffer_samples == 1)
@@ -915,11 +1553,13 @@ void reshade::runtime::on_present()
 			runtime::render_effects(cmd_list, _back_buffer_targets[back_buffer_index], _back_buffer_targets[back_buffer_index + 1]);
 			cmd_list->barrier(back_buffer_resource, api::resource_usage::render_target, api::resource_usage::present);
 		}
-		_deferred_composite = true;
 	}
 
 	if (_should_save_screenshot)
 		save_screenshot(_screenshot_save_before ? "After" : std::string_view());
+
+	bool *drawHUDAddr = (bool*)DRAW_FENG_BOOL_ADDR;
+	*drawHUDAddr = drawFrontEnd;
 
 	_frame_count++;
 	const auto current_time = std::chrono::high_resolution_clock::now();
@@ -952,8 +1592,19 @@ void reshade::runtime::on_present()
 
 		if (_input->is_key_pressed(_screenshot_key_data, _force_shortcut_modifiers))
 		{
+			*drawHUDAddr = _screenshot_nfs_hud;
+
 			_screenshot_count++;
 			_should_save_screenshot = true; // Remember that we want to save a screenshot next frame
+		}
+
+		if (_input->is_key_pressed(_toggle_fe_key_data, _force_shortcut_modifiers))
+		{
+			// Toggle drawFrontEnd value
+			drawFrontEnd = !drawFrontEnd;
+
+			// Update the actual memory address as well
+			*(bool *)DRAW_FENG_BOOL_ADDR = drawFrontEnd;
 		}
 
 		// Do not allow the following shortcuts while effects are being loaded or initialized (since they affect that state)
@@ -1145,12 +1796,12 @@ void reshade::runtime::on_present()
 			if (was_enabled)
 				_backup_texture_semantic_bindings = _texture_semantic_bindings;
 
-			for (const auto &binding : _backup_texture_semantic_bindings)
+			for (const auto &info : _backup_texture_semantic_bindings)
 			{
-				if (binding.second.first == _effect_permutations[0].color_srv[0] && binding.second.second == _effect_permutations[0].color_srv[1])
+				if (info.second.first == _effect_permutations[0].color_srv[0] && info.second.second == _effect_permutations[0].color_srv[1])
 					continue;
 
-				update_texture_bindings(binding.first.c_str(), addon_enabled ? binding.second.first : api::resource_view { 0 }, addon_enabled ? binding.second.second : api::resource_view { 0 });
+				update_texture_bindings(info.first.c_str(), addon_enabled ? info.second.first : api::resource_view { 0 }, addon_enabled ? info.second.second : api::resource_view { 0 });
 			}
 		}
 	}

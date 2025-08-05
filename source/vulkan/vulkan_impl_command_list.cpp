@@ -117,8 +117,8 @@ void reshade::vulkan::command_list_impl::begin_render_pass(uint32_t count, const
 			for (uint32_t i = 0; i < count && i < 8; ++i)
 				rtvs[i] = rts[i].view;
 
-			auto tracker_fn = reinterpret_cast<void(*)(uint32_t, const reshade::api::resource_view *)>(fn_ptr);
-			tracker_fn(count, rtvs);
+			auto tracker_fn = reinterpret_cast<void(*)(uint32_t, const api::resource_view *)>(fn_ptr);
+			tracker_fn((count > 8) ? 8 : count, rtvs); // 🔒 Prevent overflow
 		}
 	}
 

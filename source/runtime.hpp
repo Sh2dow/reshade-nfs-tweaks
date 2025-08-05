@@ -207,21 +207,27 @@ namespace reshade
 
 		// NFS Stuff
 		virtual void on_nfs_present();
+		virtual void on_present_clean();
+		void _on_present_clean();
+
 		std::mutex _nfs_mutex;
-		api::resource_view _nfs_backbuffer_snapshot = {};
 		// void on_present_original();
 		std::array<api::resource_view, 8> _last_bound_rtvs;
 		api::resource _last_scene_resource = {};
 
 		api::resource_view _effect_color_srv[2] = {};
 
+		bool _app_state_captured_this_frame;
 		bool _nfs_scene_ready;
-		bool _deferred_composite;
+		bool nfs_fe_passed;
+		bool _nfs_snapshot_valid;
+
 		bool _effects_fully_initialized;
 		bool get_effects_rendered_this_frame() const {return _effects_rendered_this_frame;}
 		void set_effects_rendered_this_frame(bool value) {_effects_rendered_this_frame = value;}
 		bool get_is_in_present_call() const { return _is_in_present_call; }
 		bool get_is_initialized() const { return _is_initialized; }
+		bool get_effects_enabled() const { return _effects_enabled; }
 		uint64_t get_frame_count() const { return _frame_count; }
 		api::command_queue *const get_graphics_queue() const { return  _graphics_queue;}
 
@@ -235,9 +241,16 @@ namespace reshade
 		api::resource _scene_texture_output = {};
 		api::resource_view _scene_texture_output_rtv = {};
 		api::resource_view _scene_texture_output_srgb = {};
+		api::resource_view _scene_texture_output_srv; // ✅ Used in composite shader
 
-		// Optional depth (if you plan to expand)
-		api::resource_view _scene_depth_texture = {};
+		api::resource _nfs_backbuffer_snapshot = {};         // actual texture
+		api::resource_view _nfs_backbuffer_snapshot_srv = {}; // SRV to use for effects
+		api::resource_view _nfs_backbuffer_snapshot_rtv = {}; // RTV to use for effects
+
+		bool has_valid_back_buffer() const
+		{
+			return !_back_buffer_targets.empty() && _back_buffer_targets[0].handle != 0;
+		}
 
 // unused
 
@@ -639,4 +652,5 @@ namespace reshade
 		if (g_runtime_nfs != nullptr)
 			g_runtime_nfs->track_render_targets_if_external(count, rtvs);
 	}
+	inline bool pre_fe_debug = false;
 }
