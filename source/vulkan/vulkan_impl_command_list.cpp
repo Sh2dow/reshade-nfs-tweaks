@@ -10,6 +10,8 @@
 #include <cstring> // std::memcmp, std::memcpy
 #include <algorithm> // std::copy_n, std::max, std::min, std::swap
 
+#include "runtime.hpp"
+
 #define vk _device_impl->_dispatch_table
 
 static void convert_subresource(uint32_t subresource, const VkImageCreateInfo &create_info, VkImageSubresourceLayers &subresource_info)
@@ -107,10 +109,6 @@ void reshade::vulkan::command_list_impl::begin_render_pass(uint32_t count, const
 	// 🔄 RTV tracking (used by NFS Pre-FE ReShade logic)
 	{
 		uint64_t fn_ptr = 0;
-		static constexpr uint8_t nfs_rtv_tracker_key[16] = {
-			'N', 'F', 'S', '_', 'R', 'T', 'V', '_', 'T', 'R', 'K', 0, 0, 0, 0, 1
-		};
-
 		_device_impl->get_private_data(nfs_rtv_tracker_key, &fn_ptr);
 
 		if (fn_ptr != 0 && count > 0 && rts != nullptr)

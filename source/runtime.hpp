@@ -207,6 +207,7 @@ namespace reshade
 
 		// NFS Stuff
 		virtual void on_nfs_present();
+		std::mutex _nfs_mutex;
 		api::resource_view _nfs_backbuffer_snapshot = {};
 		// void on_present_original();
 		std::array<api::resource_view, 8> _last_bound_rtvs;
@@ -214,6 +215,7 @@ namespace reshade
 
 		api::resource_view _effect_color_srv[2] = {};
 
+		bool _nfs_scene_ready;
 		bool _deferred_composite;
 		bool _effects_fully_initialized;
 		bool get_effects_rendered_this_frame() const {return _effects_rendered_this_frame;}
@@ -625,13 +627,16 @@ namespace reshade
 	template <> void runtime::set_uniform_value<uint32_t>(uniform &variable, const uint32_t *values, size_t count, size_t array_index);
 
 	static constexpr uint8_t nfs_rtv_tracker_key[16] = {
-		'N', 'F', 'S', '_', 'R', 'T', 'V', '_', 'T', 'R', 'K', 0, 0, 0, 0, 1
+		'N', 'F', 'S', '_', 'R', 'T', 'V', '_', 'T', 'R', 'K', '_', 2, 0, 2, 5
 	};
-	inline runtime *g_nfs_runtime = nullptr;
+	inline runtime *g_runtime_nfs = nullptr;
 	inline bool g_force_custom_fe_render_pass;
+	// inline std::function<void(uint32_t count, const reshade::api::resource_view *rtvs)> g_active_rtv_tracker = nullptr;
+
+	// inline void (*g_nfs_rtv_tracker)(uint32_t count, const reshade::api::resource_view *rtvs);
 	inline void rtv_tracker_forwarder(uint32_t count, const reshade::api::resource_view *rtvs)
 	{
-		if (g_nfs_runtime != nullptr)
-			g_nfs_runtime->track_render_targets_if_external(count, rtvs);
+		if (g_runtime_nfs != nullptr)
+			g_runtime_nfs->track_render_targets_if_external(count, rtvs);
 	}
 }
