@@ -406,6 +406,9 @@ namespace reshade
 		void draw_gui_statistics();
 		void draw_gui_log();
 		void draw_gui_about();
+#if !defined(_WIN64) && (defined(GAME_MW) || defined(GAME_CARBON) || defined(GAME_UG2) || defined(GAME_UG) || defined(GAME_PS) || defined(GAME_UC))
+		void draw_gui_nfs();
+#endif
 #if RESHADE_ADDON
 		void draw_gui_addons();
 #endif

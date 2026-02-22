@@ -13,29 +13,7 @@
 #include "hook_manager.hpp"
 #include "addon_manager.hpp"
 
-// NFS changes
-#ifdef GAME_MW
-#include "NFSMW_PreFEngHook.h"
-#endif
-#ifdef GAME_CARBON
-#include "NFSC_PreFEngHook.h"
-#endif
-#ifdef GAME_UG2
-#include "NFSU2_PreFEngHook.h"
-#endif
-#ifdef GAME_UG
-#include "NFSU_PreFEngHook.h"
-#endif
-#ifdef GAME_PS
-#include "NFSPS_PreFEngHook.h"
-#endif
-#ifdef GAME_UC
-#include "NFSUC_PreFEngHook.h"
-#endif
-
 using reshade::d3d9::to_handle;
-
-Direct3DDevice9 *g_pd3dDevice = nullptr;
 
 extern thread_local bool g_in_d3d9_runtime;
 extern thread_local bool g_in_dxgi_runtime;
@@ -80,7 +58,6 @@ Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9   *original, bool use_software
 	device_impl(original),
 	_use_software_rendering(use_software_rendering)
 {
-	g_pd3dDevice = this;
 	assert(_orig != nullptr);
 
 #if RESHADE_ADDON
@@ -112,9 +89,6 @@ Direct3DDevice9::Direct3DDevice9(IDirect3DDevice9Ex *original, bool use_software
 }
 Direct3DDevice9::~Direct3DDevice9()
 {
-	if (g_pd3dDevice == this)
-		g_pd3dDevice = nullptr;
-
 	on_reset();
 
 #if RESHADE_ADDON
@@ -2842,62 +2816,4 @@ void Direct3DDevice9::resize_primitive_up_buffers(UINT vertex_buffer_size, UINT 
 		}
 	}
 }
-#endif
-
-// NFS Stuff
-#if defined(GAME_UC) || defined(GAME_PS)
-#ifdef GAME_UC
-extern bool g_nfs_motion_blur_enabled;
-bool bGlobalMotionBlur = false;
-int NFSUC_MOTIONBLUR_ExitPointTrue = NFSUC_MOTIONBLUR_EXIT_TRUE;
-int NFSUC_MOTIONBLUR_ExitPointFalse = NFSUC_MOTIONBLUR_EXIT_FALSE;
-void __declspec(naked) MotionBlur_EntryPoint()
-{
-	if (!bGlobalMotionBlur)
-		_asm jmp NFSUC_MOTIONBLUR_ExitPointFalse
-	_asm
-	{
-		push 0xA
-		mov ecx, 0xDF1DE0
-		jmp NFSUC_MOTIONBLUR_ExitPointTrue
-	}
-}
-#endif
-void __stdcall ReShade_Hook()
-{
-	Direct3DDevice9 *device = *(Direct3DDevice9 **)NFS_D3D9_DEVICE_ADDRESS;
-	if (device == nullptr || device->_implicit_swapchain == nullptr)
-		return;
-#ifdef GAME_UC
-	bGlobalMotionBlur = g_nfs_motion_blur_enabled;
-#endif
-	device->_implicit_swapchain->on_nfs_present(); // Render ReShade before FE rendering.
-}
-
-int NFSUC_ExitPoint1 = NFSUC_EXIT1;
-int NFSUC_ExitPoint2 = NFSUC_EXIT2;
-int NFSUC_EntryPoint_EBX = 0;
-void __declspec(naked) ReShade_EntryPoint()
-{
-	_asm mov NFSUC_EntryPoint_EBX, ebx
-	ReShade_Hook();
-	if (*(bool *)(NFSUC_EntryPoint_EBX + 0xA))
-		_asm jmp NFSUC_ExitPoint1
-	_asm jmp NFSUC_ExitPoint2
-}
-
-#else
-#ifdef FEMANAGER_RENDER_ADDRESS
-void(__thiscall *FEManager_Render)(unsigned int dis) = (void(__thiscall *)(unsigned int))FEMANAGER_RENDER_ADDRESS;
-void __stdcall FEManager_Render_Hook()
-{
-	unsigned int TheThis = 0;
-	_asm mov TheThis, ecx
-
-	if (g_pd3dDevice != nullptr && g_pd3dDevice->_implicit_swapchain != nullptr)
-		g_pd3dDevice->_implicit_swapchain->on_nfs_present(); // Render ReShade before FE rendering.
-
-	FEManager_Render(TheThis);
-}
-#endif
 #endif

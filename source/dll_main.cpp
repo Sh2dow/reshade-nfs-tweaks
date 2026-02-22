@@ -12,6 +12,28 @@
 #include <Psapi.h>
 #include <delayimp.h> // Delay-load helpers
 
+#if !defined(_WIN64)
+#include "nfsincludes/injector/injector.hpp"
+#ifdef GAME_MW
+#include "NFSMW_PreFEngHook.h"
+#endif
+#ifdef GAME_CARBON
+#include "NFSC_PreFEngHook.h"
+#endif
+#ifdef GAME_UG2
+#include "NFSU2_PreFEngHook.h"
+#endif
+#ifdef GAME_UG
+#include "NFSU_PreFEngHook.h"
+#endif
+#ifdef GAME_PS
+#include "NFSPS_PreFEngHook.h"
+#endif
+#ifdef GAME_UC
+#include "NFSUC_PreFEngHook.h"
+#endif
+#endif
+
 // Export special symbol to identify modules as ReShade instances
 extern "C" __declspec(dllexport) const char *ReShadeVersion = VERSION_STRING_PRODUCT;
 
@@ -361,6 +383,18 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 					reshade::hooks::register_module(L"openvr_api.dll");
 				}
 			}
+
+#if !defined(_WIN64) && (defined(GAME_MW) || defined(GAME_CARBON) || defined(GAME_UG2) || defined(GAME_UG) || defined(GAME_PS) || defined(GAME_UC))
+#ifdef NFS_MULTITHREAD
+			injector::MakeJMP(FEMANAGER_RENDER_HOOKADDR1, ReShade_EntryPoint, true);
+			injector::MakeCALL(MAINSERVICE_HOOK_ADDR, MainService_Hook, true);
+#else
+			injector::MakeCALL(FEMANAGER_RENDER_HOOKADDR1, FEManager_Render_Hook, true);
+#ifdef FEMANAGER_RENDER_HOOKADDR2
+			injector::MakeCALL(FEMANAGER_RENDER_HOOKADDR2, FEManager_Render_Hook, true);
+#endif
+#endif
+#endif
 
 			reshade::log::message(reshade::log::level::info, "Initialized.");
 
