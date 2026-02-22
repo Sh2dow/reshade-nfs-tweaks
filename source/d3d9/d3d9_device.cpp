@@ -2887,6 +2887,7 @@ void __declspec(naked) ReShade_EntryPoint()
 }
 
 #else
+#ifdef FEMANAGER_RENDER_ADDRESS
 void(__thiscall *FEManager_Render)(unsigned int dis) = (void(__thiscall *)(unsigned int))FEMANAGER_RENDER_ADDRESS;
 void __stdcall FEManager_Render_Hook()
 {
@@ -2898,4 +2899,5 @@ void __stdcall FEManager_Render_Hook()
 
 	FEManager_Render(TheThis);
 }
+#endif
 #endif
