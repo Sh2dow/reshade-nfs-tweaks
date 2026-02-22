@@ -27,6 +27,7 @@ namespace reshade::d3d9
 		void on_reset();
 
 		void on_present();
+		void on_nfs_present();
 
 #if RESHADE_ADDON && RESHADE_FX
 		void render_effects(api::command_list *cmd_list, api::resource_view rtv, api::resource_view rtv_srgb) final;

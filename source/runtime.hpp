@@ -64,6 +64,10 @@ namespace reshade
 		/// </summary>
 		bool is_initialized() const { return _is_initialized; }
 
+#ifdef GAME_UC
+		bool bMotionBlur = false;
+#endif
+
 #if RESHADE_FX
 		virtual void render_effects(api::command_list *cmd_list, api::resource_view rtv, api::resource_view rtv_srgb) override;
 		virtual void render_technique(api::effect_technique handle, api::command_list *cmd_list, api::resource_view rtv, api::resource_view rtv_srgb) override;
@@ -426,6 +430,7 @@ namespace reshade
 		void draw_gui_log();
 		void draw_gui_about();
 #if RESHADE_ADDON
+		void draw_gui_nfs();
 		void draw_gui_addons();
 #endif
 #if RESHADE_FX
