@@ -11,8 +11,20 @@
 #include "addon_manager.hpp"
 #include "runtime_manager.hpp"
 #include <algorithm> // std::find
+#include <atomic>
 
 using reshade::d3d9::to_handle;
+
+static std::atomic<Direct3DSwapChain9 *> s_nfs_implicit_swapchain = nullptr;
+
+Direct3DSwapChain9 *reshade::d3d9::get_nfs_implicit_swapchain()
+{
+	return s_nfs_implicit_swapchain.load(std::memory_order_acquire);
+}
+void reshade::d3d9::set_nfs_implicit_swapchain(Direct3DSwapChain9 *swapchain)
+{
+	s_nfs_implicit_swapchain.store(swapchain, std::memory_order_release);
+}
 
 bool Direct3DSwapChain9::is_presenting_entire_surface(const RECT *source_rect, HWND hwnd)
 {
@@ -50,6 +62,9 @@ Direct3DSwapChain9::Direct3DSwapChain9(Direct3DDevice9 *device, IDirect3DSwapCha
 }
 Direct3DSwapChain9::~Direct3DSwapChain9()
 {
+	if (reshade::d3d9::get_nfs_implicit_swapchain() == this)
+		reshade::d3d9::set_nfs_implicit_swapchain(nullptr);
+
 	on_reset(false);
 	reshade::destroy_effect_runtime(this);
 }

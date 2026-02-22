@@ -241,6 +241,7 @@ static void init_device_proxy(T *&device, D3DDEVTYPE device_type, HWND device_wi
 
 	const auto device_proxy = new Direct3DDevice9(device, use_software_rendering);
 	device_proxy->_implicit_swapchain = new Direct3DSwapChain9(device_proxy, swapchain);
+	reshade::d3d9::set_nfs_implicit_swapchain(device_proxy->_implicit_swapchain);
 
 	// Overwrite returned device with proxy device
 	device = device_proxy;

@@ -8,6 +8,12 @@
 #include "d3d9_impl_swapchain.hpp"
 
 class Direct3DDevice9;
+class Direct3DSwapChain9;
+namespace reshade::d3d9
+{
+	Direct3DSwapChain9 *get_nfs_implicit_swapchain();
+	void set_nfs_implicit_swapchain(Direct3DSwapChain9 *swapchain);
+}
 
 class DECLSPEC_UUID("BC52FCE4-1EAC-40C8-84CF-863600BBAA01") Direct3DSwapChain9 final : public IDirect3DSwapChain9Ex, public reshade::d3d9::swapchain_impl
 {

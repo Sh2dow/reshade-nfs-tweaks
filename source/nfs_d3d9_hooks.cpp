@@ -25,18 +25,13 @@
 #include "NFSUC_PreFEngHook.h"
 #endif
 
-static Direct3DDevice9 *get_nfs_device()
-{
-	return *reinterpret_cast<Direct3DDevice9 **>(NFS_D3D9_DEVICE_ADDRESS);
-}
-
 static void __stdcall ReShade_Hook()
 {
-	Direct3DDevice9 *const device = get_nfs_device();
-	if (device == nullptr || device->_implicit_swapchain == nullptr)
+	Direct3DSwapChain9 *const swapchain = reshade::d3d9::get_nfs_implicit_swapchain();
+	if (swapchain == nullptr)
 		return;
 
-	device->_implicit_swapchain->on_nfs_present();
+	swapchain->on_nfs_present();
 }
 
 #if defined(GAME_UC) || defined(GAME_PS)
