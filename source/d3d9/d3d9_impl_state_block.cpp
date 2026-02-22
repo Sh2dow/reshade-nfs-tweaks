@@ -18,10 +18,13 @@ reshade::d3d9::state_block::state_block(IDirect3DDevice9 *device) :
 	if (_num_simultaneous_rts > ARRAYSIZE(_render_targets))
 		_num_simultaneous_rts = ARRAYSIZE(_render_targets);
 #endif
+
+	D3DDEVICE_CREATION_PARAMETERS cp = {};
+	device->GetCreationParameters(&cp);
+	_vertex_processing = cp.BehaviorFlags & (D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MIXED_VERTEXPROCESSING);
 }
 reshade::d3d9::state_block::~state_block()
 {
-	release_all_device_objects();
 }
 
 void reshade::d3d9::state_block::capture()
@@ -41,6 +44,12 @@ void reshade::d3d9::state_block::capture()
 
 	_device->GetRenderState(D3DRS_SRGBWRITEENABLE, &_srgb_write);
 	_device->GetSamplerState(0, D3DSAMP_SRGBTEXTURE, &_srgb_texture);
+
+	if (0 != (_vertex_processing & D3DCREATE_MIXED_VERTEXPROCESSING))
+	{
+		_vertex_processing |= _device->GetSoftwareVertexProcessing();
+		_device->SetSoftwareVertexProcessing(FALSE); // Disable software vertex processing since it is incompatible with programmable shaders
+	}
 }
 void reshade::d3d9::state_block::apply_and_release()
 {
@@ -50,24 +59,25 @@ void reshade::d3d9::state_block::apply_and_release()
 	// Release state block every time, so that all references to captured vertex and index buffers, textures, etc. are released again
 	_state_block.reset();
 
+	if (0 != (_vertex_processing & D3DCREATE_MIXED_VERTEXPROCESSING))
+	{
+		_device->SetSoftwareVertexProcessing(_vertex_processing & (TRUE | FALSE));
+		_vertex_processing &= ~(TRUE | FALSE);
+	}
+
 	// This should technically be captured and applied by the state block already ...
 	// But Steam overlay messes it up somehow and this is neceesary to fix the screen darkening in Portal when the Steam overlay is showing a notification popup and the ReShade overlay is open at the same time
 	_device->SetRenderState(D3DRS_SRGBWRITEENABLE, _srgb_write);
 	_device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, _srgb_texture);
 
-	for (DWORD target = 0; target < _num_simultaneous_rts; target++)
-		_device->SetRenderTarget(target, _render_targets[target].get());
+	for (DWORD i = 0; i < _num_simultaneous_rts; i++)
+		_device->SetRenderTarget(i, _render_targets[i].get());
 	_device->SetDepthStencilSurface(_depth_stencil.get());
 
 	// Set viewport after render targets have been set, since 'SetRenderTarget' causes the viewport to be set to the full size of the render target
 	_device->SetViewport(&_viewport);
 
-	release_all_device_objects();
-}
-
-void reshade::d3d9::state_block::release_all_device_objects()
-{
-	_depth_stencil.reset();
 	for (auto &render_target : _render_targets)
 		render_target.reset();
+	_depth_stencil.reset();
 }

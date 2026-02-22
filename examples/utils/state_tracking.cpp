@@ -20,6 +20,12 @@ void state_block::apply(command_list *cmd_list) const
 		cmd_list->bind_pipeline_state(dynamic_state::primitive_topology, static_cast<uint32_t>(primitive_topology));
 	if (blend_constant != 0)
 		cmd_list->bind_pipeline_state(dynamic_state::blend_constant, blend_constant);
+	if (sample_mask != 0xFFFFFFFF)
+		cmd_list->bind_pipeline_state(dynamic_state::sample_mask, sample_mask);
+	if (front_stencil_reference_value != 0)
+		cmd_list->bind_pipeline_state(dynamic_state::front_stencil_reference_value, front_stencil_reference_value);
+	if (back_stencil_reference_value != 0)
+		cmd_list->bind_pipeline_state(dynamic_state::back_stencil_reference_value, back_stencil_reference_value);
 
 	if (!viewports.empty())
 		cmd_list->bind_viewports(0, static_cast<uint32_t>(viewports.size()), viewports.data());
@@ -37,6 +43,9 @@ void state_block::clear()
 	pipelines.clear();
 	primitive_topology = primitive_topology::undefined;
 	blend_constant = 0;
+	sample_mask = 0xFFFFFFFF;
+	front_stencil_reference_value = 0;
+	back_stencil_reference_value = 0;
 	viewports.clear();
 	scissor_rects.clear();
 	descriptor_tables.clear();
@@ -53,20 +62,20 @@ static void on_destroy_command_list(command_list *cmd_list)
 
 static void on_bind_render_targets_and_depth_stencil(command_list *cmd_list, uint32_t count, const resource_view *rtvs, resource_view dsv)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>();
+	auto &state = *cmd_list->get_private_data<state_tracking>();
 	state.render_targets.assign(rtvs, rtvs + count);
 	state.depth_stencil = dsv;
 }
 
 static void on_bind_pipeline(command_list *cmd_list, pipeline_stage stages, pipeline pipeline)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>();
+	auto &state = *cmd_list->get_private_data<state_tracking>();
 	state.pipelines[stages] = pipeline;
 }
 
 static void on_bind_pipeline_states(command_list *cmd_list, uint32_t count, const dynamic_state *states, const uint32_t *values)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>();
+	auto &state = *cmd_list->get_private_data<state_tracking>();
 
 	for (uint32_t i = 0; i < count; ++i)
 	{
@@ -78,16 +87,26 @@ static void on_bind_pipeline_states(command_list *cmd_list, uint32_t count, cons
 		case dynamic_state::blend_constant:
 			state.blend_constant = values[i];
 			break;
+		case dynamic_state::sample_mask:
+			state.sample_mask = values[i];
+			break;
+		case dynamic_state::front_stencil_reference_value:
+			state.front_stencil_reference_value = values[i];
+			break;
+		case dynamic_state::back_stencil_reference_value:
+			state.back_stencil_reference_value = values[i];
+			break;
 		}
 	}
 }
 
 static void on_bind_viewports(command_list *cmd_list, uint32_t first, uint32_t count, const viewport *viewports)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>();
+	auto &state = *cmd_list->get_private_data<state_tracking>();
 
-	if (state.viewports.size() < (first + count))
-		state.viewports.resize(first + count);
+	const uint32_t total_count = first + count;
+	if (state.viewports.size() < total_count)
+		state.viewports.resize(total_count);
 
 	for (uint32_t i = 0; i < count; ++i)
 		state.viewports[i + first] = viewports[i];
@@ -95,10 +114,11 @@ static void on_bind_viewports(command_list *cmd_list, uint32_t first, uint32_t c
 
 static void on_bind_scissor_rects(command_list *cmd_list, uint32_t first, uint32_t count, const rect *rects)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>();
+	auto &state = *cmd_list->get_private_data<state_tracking>();
 
-	if (state.scissor_rects.size() < (first + count))
-		state.scissor_rects.resize(first + count);
+	const uint32_t total_count = first + count;
+	if (state.scissor_rects.size() < total_count)
+		state.scissor_rects.resize(total_count);
 
 	for (uint32_t i = 0; i < count; ++i)
 		state.scissor_rects[i + first] = rects[i];
@@ -106,14 +126,15 @@ static void on_bind_scissor_rects(command_list *cmd_list, uint32_t first, uint32
 
 static void on_bind_descriptor_tables(command_list *cmd_list, shader_stage stages, pipeline_layout layout, uint32_t first, uint32_t count, const descriptor_table *tables)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>().descriptor_tables[stages];
+	auto &state = cmd_list->get_private_data<state_tracking>()->descriptor_tables[stages];
 
 	if (layout != state.first)
-		state.second.clear(); // Layout changed, which resets all descriptor set bindings
+		state.second.clear(); // Layout changed, which resets all descriptor table bindings
 	state.first = layout;
 
-	if (state.second.size() < (first + count))
-		state.second.resize(first + count);
+	const uint32_t total_count = first + count;
+	if (state.second.size() < total_count)
+		state.second.resize(total_count);
 
 	for (uint32_t i = 0; i < count; ++i)
 		state.second[i + first] = tables[i];
@@ -121,7 +142,7 @@ static void on_bind_descriptor_tables(command_list *cmd_list, shader_stage stage
 
 static void on_reset_command_list(command_list *cmd_list)
 {
-	auto &state = cmd_list->get_private_data<state_tracking>();
+	auto &state = *cmd_list->get_private_data<state_tracking>();
 	state.clear();
 }
 

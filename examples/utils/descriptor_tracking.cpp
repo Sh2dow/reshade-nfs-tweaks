@@ -8,30 +8,52 @@
 
 using namespace reshade::api;
 
+buffer_range descriptor_tracking::get_buffer_range(descriptor_heap heap, uint32_t offset) const
+{
+	const descriptor_heap_data &heap_data = heaps.at(heap);
+
+	if (offset < heap_data.descriptors.size())
+	{
+		const std::pair<descriptor_type, descriptor_data> &descriptor = heap_data.descriptors[offset];
+
+		if (descriptor.first == descriptor_type::constant_buffer ||
+			descriptor.first == descriptor_type::shader_storage_buffer)
+			return descriptor.second.b;
+	}
+
+	return { 0 };
+}
+
 sampler descriptor_tracking::get_sampler(descriptor_heap heap, uint32_t offset) const
 {
 	const descriptor_heap_data &heap_data = heaps.at(heap);
 
 	if (offset < heap_data.descriptors.size())
 	{
-		const std::pair<descriptor_type, sampler_with_resource_view> &descriptor = heap_data.descriptors[offset];
+		const std::pair<descriptor_type, descriptor_data> &descriptor = heap_data.descriptors[offset];
 
-		if (descriptor.first == descriptor_type::sampler || descriptor.first == descriptor_type::sampler_with_resource_view)
-			return descriptor.second.sampler;
+		if (descriptor.first == descriptor_type::sampler ||
+			descriptor.first == descriptor_type::sampler_with_resource_view)
+			return descriptor.second.t.sampler;
 	}
 
 	return { 0 };
 }
-resource_view descriptor_tracking::get_shader_resource_view(descriptor_heap heap, uint32_t offset) const
+resource_view descriptor_tracking::get_resource_view(descriptor_heap heap, uint32_t offset) const
 {
 	const descriptor_heap_data &heap_data = heaps.at(heap);
 
 	if (offset < heap_data.descriptors.size())
 	{
-		const std::pair<descriptor_type, sampler_with_resource_view> &descriptor = heap_data.descriptors[offset];
+		const std::pair<descriptor_type, descriptor_data> &descriptor = heap_data.descriptors[offset];
 
-		if (descriptor.first == descriptor_type::shader_resource_view || descriptor.first == descriptor_type::sampler_with_resource_view)
-			return descriptor.second.view;
+		if (descriptor.first == descriptor_type::sampler_with_resource_view ||
+			descriptor.first == descriptor_type::buffer_shader_resource_view ||
+			descriptor.first == descriptor_type::buffer_unordered_access_view ||
+			descriptor.first == descriptor_type::texture_shader_resource_view ||
+			descriptor.first == descriptor_type::texture_unordered_access_view ||
+			descriptor.first == descriptor_type::acceleration_structure)
+			return descriptor.second.t.view;
 	}
 
 	return { 0 };
@@ -77,18 +99,18 @@ static void on_destroy_device(device *device)
 
 void descriptor_tracking::on_init_pipeline_layout(device *device, uint32_t count, const pipeline_layout_param *params, pipeline_layout layout)
 {
-	descriptor_tracking &ctx = device->get_private_data<descriptor_tracking>();
+	auto &ctx = *device->get_private_data<descriptor_tracking>();
 	ctx.register_pipeline_layout(layout, count, params);
 }
 void descriptor_tracking::on_destroy_pipeline_layout(device *device, pipeline_layout layout)
 {
-	descriptor_tracking &ctx = device->get_private_data<descriptor_tracking>();
+	auto &ctx = *device->get_private_data<descriptor_tracking>();
 	ctx.unregister_pipeline_layout(layout);
 }
 
 bool descriptor_tracking::on_copy_descriptor_tables(device *device, uint32_t count, const descriptor_table_copy *copies)
 {
-	descriptor_tracking &ctx = device->get_private_data<descriptor_tracking>();
+	auto &ctx = *device->get_private_data<descriptor_tracking>();
 
 	for (uint32_t i = 0; i < count; ++i)
 	{
@@ -119,7 +141,7 @@ bool descriptor_tracking::on_copy_descriptor_tables(device *device, uint32_t cou
 
 bool descriptor_tracking::on_update_descriptor_tables(device *device, uint32_t count, const descriptor_table_update *updates)
 {
-	descriptor_tracking &ctx = device->get_private_data<descriptor_tracking>();
+	auto &ctx = *device->get_private_data<descriptor_tracking>();
 
 	for (uint32_t i = 0; i < count; ++i)
 	{
@@ -136,21 +158,28 @@ bool descriptor_tracking::on_update_descriptor_tables(device *device, uint32_t c
 
 		for (uint32_t k = 0; k < update.count; ++k)
 		{
-			std::pair<descriptor_type, sampler_with_resource_view> &descriptor = heap_data.descriptors[offset + k];
+			std::pair<descriptor_type, descriptor_data> &descriptor = heap_data.descriptors[offset + k];
 
 			descriptor.first = update.type;
 
 			switch (update.type)
 			{
 			case descriptor_type::sampler:
-				descriptor.second.sampler = static_cast<const sampler *>(update.descriptors)[k];
+				descriptor.second.t.sampler = static_cast<const sampler *>(update.descriptors)[k];
 				break;
 			case descriptor_type::sampler_with_resource_view:
-				descriptor.second = static_cast<const sampler_with_resource_view *>(update.descriptors)[k];
+				descriptor.second.t = static_cast<const sampler_with_resource_view *>(update.descriptors)[k];
 				break;
-			case descriptor_type::shader_resource_view:
-			case descriptor_type::unordered_access_view:
-				descriptor.second.view = static_cast<const resource_view *>(update.descriptors)[k];
+			case descriptor_type::buffer_shader_resource_view:
+			case descriptor_type::buffer_unordered_access_view:
+			case descriptor_type::texture_shader_resource_view:
+			case descriptor_type::texture_unordered_access_view:
+			case descriptor_type::acceleration_structure:
+				descriptor.second.t.view = static_cast<const resource_view *>(update.descriptors)[k];
+				break;
+			case descriptor_type::constant_buffer:
+			case descriptor_type::shader_storage_buffer:
+				descriptor.second.b = static_cast<const buffer_range *>(update.descriptors)[k];
 				break;
 			}
 		}

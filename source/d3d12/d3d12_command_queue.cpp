@@ -8,6 +8,8 @@
 #include "d3d12_command_queue.hpp"
 #include "d3d12_command_queue_downlevel.hpp"
 #include "dll_log.hpp"
+#include "com_utils.hpp"
+#include "addon_manager.hpp"
 
 D3D12CommandQueue::D3D12CommandQueue(D3D12Device *device, ID3D12CommandQueue *original) :
 	command_queue_impl(device, original),
@@ -16,6 +18,18 @@ D3D12CommandQueue::D3D12CommandQueue(D3D12Device *device, ID3D12CommandQueue *or
 	assert(_orig != nullptr && _device != nullptr);
 	// Explicitly add a reference to the device, to ensure it stays valid for the lifetime of this queue object
 	_device->AddRef();
+
+#if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::init_command_queue>(this);
+#endif
+}
+D3D12CommandQueue::~D3D12CommandQueue()
+{
+#if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::destroy_command_queue>(this);
+#endif
+
+	// Release the device reference below at the end of 'D3D12CommandQueue::Release' rather than here, since the '~command_queue_impl' destructor still has to run with the device alive
 }
 
 bool D3D12CommandQueue::check_and_upgrade_interface(REFIID riid)
@@ -27,8 +41,9 @@ bool D3D12CommandQueue::check_and_upgrade_interface(REFIID riid)
 		riid == __uuidof(ID3D12Pageable))
 		return true;
 
-	static const IID iid_lookup[] = {
-		__uuidof(ID3D12CommandQueue),
+	static constexpr IID iid_lookup[] = {
+		__uuidof(ID3D12CommandQueue),  // {0EC870A6-5D7E-4C22-8CFC-5BAAE07616ED}
+		__uuidof(ID3D12CommandQueue1), // {3A3C3165-0EE7-4B8E-A0AF-6356B4c3BBB9}
 	};
 
 	for (unsigned short version = 0; version < ARRAYSIZE(iid_lookup); ++version)
@@ -42,7 +57,7 @@ bool D3D12CommandQueue::check_and_upgrade_interface(REFIID riid)
 			if (FAILED(_orig->QueryInterface(riid, reinterpret_cast<void **>(&new_interface))))
 				return false;
 #if RESHADE_VERBOSE_LOG
-			LOG(DEBUG) << "Upgrading ID3D12CommandQueue" << _interface_version << " object " << this << " to ID3D12CommandQueue" << version << '.';
+			reshade::log::message(reshade::log::level::debug, "Upgrading ID3D12CommandQueue%hu object %p to ID3D12CommandQueue%hu.", _interface_version, this, version);
 #endif
 			_orig->Release();
 			_orig = static_cast<ID3D12CommandQueue *>(new_interface);
@@ -67,14 +82,28 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueue::QueryInterface(REFIID riid, void **
 		return S_OK;
 	}
 
-	// Special case for d3d12on7
-	if (riid == __uuidof(ID3D12CommandQueueDownlevel))
+	// Interface ID to query the original object from a proxy object
+	if (riid == IID_UnwrappedObject)
 	{
-		if (ID3D12CommandQueueDownlevel *downlevel = nullptr; // Not a 'com_ptr' since D3D12CommandQueueDownlevel will take ownership
-			_downlevel == nullptr && SUCCEEDED(_orig->QueryInterface(&downlevel)))
-			_downlevel = new D3D12CommandQueueDownlevel(this, downlevel);
+		_orig->AddRef();
+		*ppvObj = _orig;
+		return S_OK;
+	}
+
+	// Special case for d3d12on7
+	if (riid == __uuidof(ID3D12CommandQueueDownlevel)) // {38A8C5EF-7CCB-4E81-914F-A6E9D072C494}
+	{
+		if (_downlevel == nullptr)
+		{
+			// Not a 'com_ptr' since D3D12CommandQueueDownlevel will take ownership
+			ID3D12CommandQueueDownlevel *downlevel = nullptr;
+			if (SUCCEEDED(_orig->QueryInterface(&downlevel)))
+				_downlevel = new D3D12CommandQueueDownlevel(this, downlevel);
+		}
+
 		if (_downlevel != nullptr)
 			return _downlevel->QueryInterface(riid, ppvObj);
+		return E_NOINTERFACE;
 	}
 
 	return _orig->QueryInterface(riid, ppvObj);
@@ -104,13 +133,13 @@ ULONG   STDMETHODCALLTYPE D3D12CommandQueue::Release()
 	const auto device = _device;
 	const auto interface_version = _interface_version;
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Destroying " << "ID3D12CommandQueue" << interface_version << " object " << this << " (" << orig << ").";
+	reshade::log::message(reshade::log::level::debug, "Destroying ID3D12CommandQueue%hu object %p (%p).", interface_version, this, orig);
 #endif
 	delete this;
 
 	const ULONG ref_orig = orig->Release();
 	if (ref_orig != 0) // Verify internal reference count
-		LOG(WARN) << "Reference count for " << "ID3D12CommandQueue" << interface_version << " object " << this << " (" << orig << ") is inconsistent (" << ref_orig << ").";
+		reshade::log::message(reshade::log::level::warning, "Reference count for ID3D12CommandQueue%hu object %p (%p) is inconsistent (%lu).", interface_version, this, orig, ref_orig);
 
 	// Release the explicit reference to the device that was added in the 'D3D12CommandQueue' constructor above now that the queue implementation was destroyed and is no longer referencing it
 	device->Release();
@@ -150,7 +179,7 @@ void    STDMETHODCALLTYPE D3D12CommandQueue::CopyTileMappings(ID3D12Resource *pD
 void    STDMETHODCALLTYPE D3D12CommandQueue::ExecuteCommandLists(UINT NumCommandLists, ID3D12CommandList *const *ppCommandLists)
 {
 	// Synchronize access to this command queue while events are invoked and the immediate command list may be accessed
-	std::unique_lock<std::shared_mutex> lock(_mutex);
+	std::unique_lock<std::recursive_mutex> lock(_mutex);
 
 	temp_mem<ID3D12CommandList *> command_lists(NumCommandLists);
 	for (UINT i = 0; i < NumCommandLists; ++i)
@@ -211,4 +240,29 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueue::GetClockCalibration(UINT64 *pGpuTim
 D3D12_COMMAND_QUEUE_DESC STDMETHODCALLTYPE D3D12CommandQueue::GetDesc()
 {
 	return _orig->GetDesc();
+}
+
+HRESULT STDMETHODCALLTYPE D3D12CommandQueue::SetProcessPriority(D3D12_COMMAND_QUEUE_PROCESS_PRIORITY Priority)
+{
+	assert(_interface_version >= 1);
+
+	return static_cast<ID3D12CommandQueue1 *>(_orig)->SetProcessPriority(Priority);
+}
+HRESULT STDMETHODCALLTYPE D3D12CommandQueue::GetProcessPriority(D3D12_COMMAND_QUEUE_PROCESS_PRIORITY *pOutValue)
+{
+	assert(_interface_version >= 1);
+
+	return static_cast<ID3D12CommandQueue1 *>(_orig)->GetProcessPriority(pOutValue);
+}
+HRESULT STDMETHODCALLTYPE D3D12CommandQueue::SetGlobalPriority(D3D12_COMMAND_QUEUE_GLOBAL_PRIORITY Priority)
+{
+	assert(_interface_version >= 1);
+
+	return static_cast<ID3D12CommandQueue1 *>(_orig)->SetGlobalPriority(Priority);
+}
+HRESULT STDMETHODCALLTYPE D3D12CommandQueue::GetGlobalPriority(D3D12_COMMAND_QUEUE_GLOBAL_PRIORITY *pOutValue)
+{
+	assert(_interface_version >= 1);
+
+	return static_cast<ID3D12CommandQueue1 *>(_orig)->GetGlobalPriority(pOutValue);
 }

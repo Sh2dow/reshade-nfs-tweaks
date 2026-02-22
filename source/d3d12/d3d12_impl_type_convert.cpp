@@ -4,11 +4,8 @@
  */
 
 #include "d3d12_impl_type_convert.hpp"
-#include <limits>
 #include <cassert>
-
-// {B2257A30-4014-46EA-BD88-DEC21DB6A02B}
-const GUID reshade::d3d12::extra_data_guid = { 0xB2257A30, 0x4014, 0x46EA, { 0xBD, 0x88, 0xDE, 0xC2, 0x1D, 0xB6, 0xA0, 0x2B } };
+#include <algorithm> // std::copy_n, std::fill_n
 
 auto reshade::d3d12::convert_format(api::format format) -> DXGI_FORMAT
 {
@@ -22,21 +19,38 @@ auto reshade::d3d12::convert_format(DXGI_FORMAT format) -> api::format
 	return static_cast<api::format>(format);
 }
 
-auto reshade::d3d12::convert_color_space(DXGI_COLOR_SPACE_TYPE type) -> api::color_space
+auto reshade::d3d12::convert_color_space(api::color_space type) -> DXGI_COLOR_SPACE_TYPE
 {
 	switch (type)
 	{
 	default:
 		assert(false);
-		return api::color_space::unknown;
+		[[fallthrough]];
+	case api::color_space::srgb:
+		return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+	case api::color_space::scrgb:
+		return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+	case api::color_space::hdr10_pq:
+		return DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+	case api::color_space::hdr10_hlg:
+		return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020;
+	}
+}
+auto reshade::d3d12::convert_color_space(DXGI_COLOR_SPACE_TYPE type) -> api::color_space
+{
+	switch (type)
+	{
 	case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
-		return api::color_space::srgb_nonlinear;
+		return api::color_space::srgb;
 	case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
-		return api::color_space::extended_srgb_linear;
+		return api::color_space::scrgb;
 	case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
-		return api::color_space::hdr10_st2084;
+		return api::color_space::hdr10_pq;
 	case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
 		return api::color_space::hdr10_hlg;
+	default:
+		assert(false);
+		return api::color_space::unknown;
 	}
 }
 
@@ -76,6 +90,9 @@ auto reshade::d3d12::convert_access_to_usage(D3D12_BARRIER_ACCESS access) -> api
 		result |= api::resource_usage::resolve_dest;
 	if ((access & D3D12_BARRIER_ACCESS_RESOLVE_SOURCE) != 0)
 		result |= api::resource_usage::resolve_source;
+	if ((access & (D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ | D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE)) != 0)
+		result |= api::resource_usage::acceleration_structure;
+
 	return result;
 }
 auto reshade::d3d12::convert_barrier_layout_to_usage(D3D12_BARRIER_LAYOUT layout) -> api::resource_usage
@@ -88,7 +105,6 @@ auto reshade::d3d12::convert_barrier_layout_to_usage(D3D12_BARRIER_LAYOUT layout
 	case D3D12_BARRIER_LAYOUT_COMMON:
 	case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON:
 	case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COMMON:
-	case D3D12_BARRIER_LAYOUT_VIDEO_QUEUE_COMMON:
 		return api::resource_usage::general;
 	case D3D12_BARRIER_LAYOUT_GENERIC_READ:
 	case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ:
@@ -138,7 +154,8 @@ auto reshade::d3d12::convert_resource_states_to_usage(D3D12_RESOURCE_STATES stat
 		api::resource_usage::copy_dest == D3D12_RESOURCE_STATE_COPY_DEST &&
 		api::resource_usage::copy_source == D3D12_RESOURCE_STATE_COPY_SOURCE &&
 		api::resource_usage::resolve_dest == D3D12_RESOURCE_STATE_RESOLVE_DEST &&
-		api::resource_usage::resolve_source == D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+		api::resource_usage::resolve_source == D3D12_RESOURCE_STATE_RESOLVE_SOURCE &&
+		api::resource_usage::acceleration_structure == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
 
 	return states == D3D12_RESOURCE_STATE_COMMON ? api::resource_usage::general : static_cast<api::resource_usage>(states);
 }
@@ -179,6 +196,9 @@ auto reshade::d3d12::convert_usage_to_access(api::resource_usage state) -> D3D12
 		result |= D3D12_BARRIER_ACCESS_RESOLVE_DEST;
 	if ((state & api::resource_usage::resolve_source) != 0)
 		result |= D3D12_BARRIER_ACCESS_RESOLVE_SOURCE;
+	if ((state & api::resource_usage::acceleration_structure) != 0)
+		result |= D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ | D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
+
 	return result;
 }
 auto reshade::d3d12::convert_usage_to_resource_states(api::resource_usage state) -> D3D12_RESOURCE_STATES
@@ -310,14 +330,14 @@ reshade::api::sampler_desc reshade::d3d12::convert_sampler_desc(const D3D12_STAT
 	switch (internal_desc.BorderColor)
 	{
 	case D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK:
+		std::fill_n(desc.border_color, 4, 0.0f);
 		break;
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT:
-		desc.border_color[3] = 1.0f;
+		std::fill_n(desc.border_color, 3, 0.0f);
 		break;
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE:
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE_UINT:
-		std::fill_n(desc.border_color, 4, 1.0f);
 		break;
 	}
 
@@ -403,7 +423,7 @@ void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12
 		internal_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
 	// Mipmap generation is using compute shaders and therefore needs unordered access flag (see 'command_list_impl::generate_mipmaps')
-	if ((desc.usage & api::resource_usage::unordered_access) != 0 || (desc.flags & api::resource_flags::generate_mipmaps) != 0)
+	if ((desc.usage & (api::resource_usage::unordered_access | api::resource_usage::acceleration_structure)) != 0 || (desc.flags & api::resource_flags::generate_mipmaps) != 0)
 		internal_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 	else
 		internal_desc.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -411,8 +431,9 @@ void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12
 	if ((desc.flags & api::resource_flags::shared) != 0)
 		heap_flags |= D3D12_HEAP_FLAG_SHARED;
 
-	// Dynamic resources do not exist in D3D12
+	// Dynamic or immutable resources do not exist in D3D12
 	assert((desc.flags & api::resource_flags::dynamic) == 0);
+	assert((desc.flags & api::resource_flags::immutable) == 0);
 }
 void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC1 &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags)
 {
@@ -461,7 +482,7 @@ reshade::api::resource_desc reshade::d3d12::convert_resource_desc(const D3D12_RE
 		desc.texture.samples = static_cast<uint16_t>(internal_desc.SampleDesc.Count);
 
 		if (desc.type == api::resource_type::texture_2d)
-			desc.usage |= desc.texture.samples > 1 ? api::resource_usage::resolve_source : api::resource_usage::resolve_dest;
+			desc.usage |= (desc.texture.samples > 1) ? api::resource_usage::resolve_source : api::resource_usage::resolve_dest;
 	}
 
 	switch (heap_props.Type)
@@ -498,6 +519,9 @@ reshade::api::resource_desc reshade::d3d12::convert_resource_desc(const D3D12_RE
 	if ((internal_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0)
 	{
 		desc.usage |= api::resource_usage::unordered_access;
+		// Buffers that have unordered access may be used as acceleration structures
+		if (desc.type == api::resource_type::buffer)
+			desc.usage |= api::resource_usage::acceleration_structure;
 		// Resources that have unordered access are usable with the 'generate_mipmaps' function
 		if (internal_desc.MipLevels > 1)
 			desc.flags |= api::resource_flags::generate_mipmaps;
@@ -518,7 +542,7 @@ void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &d
 {
 	// Missing fields: D3D12_DEPTH_STENCIL_VIEW_DESC::Flags
 	internal_desc.Format = convert_format(desc.format);
-	assert(desc.type != api::resource_view_type::buffer && desc.texture.level_count == 1);
+	assert(desc.type != api::resource_view_type::buffer);
 	switch (desc.type) // Do not modifiy description in case type is 'resource_view_type::unknown'
 	{
 	case api::resource_view_type::texture_1d:
@@ -554,9 +578,14 @@ void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &d
 void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_RENDER_TARGET_VIEW_DESC &internal_desc)
 {
 	internal_desc.Format = convert_format(desc.format);
-	assert(desc.type != api::resource_view_type::buffer && desc.texture.level_count == 1);
 	switch (desc.type) // Do not modifiy description in case type is 'resource_view_type::unknown'
 	{
+	case api::resource_view_type::buffer:
+		internal_desc.ViewDimension = D3D12_RTV_DIMENSION_BUFFER;
+		internal_desc.Buffer.FirstElement = desc.buffer.offset;
+		assert(desc.buffer.size <= std::numeric_limits<UINT>::max());
+		internal_desc.Buffer.NumElements = static_cast<UINT>(desc.buffer.size);
+		break;
 	case api::resource_view_type::texture_1d:
 		internal_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE1D;
 		internal_desc.Texture1D.MipSlice = desc.texture.first_level;
@@ -604,7 +633,12 @@ void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &d
 		internal_desc.Buffer.FirstElement = desc.buffer.offset;
 		assert(desc.buffer.size <= std::numeric_limits<UINT>::max());
 		internal_desc.Buffer.NumElements = static_cast<UINT>(desc.buffer.size);
-		// Missing fields: D3D12_BUFFER_SRV::StructureByteStride, D3D12_BUFFER_SRV::Flags
+		// Missing fields: D3D12_BUFFER_SRV::StructureByteStride
+
+		if (internal_desc.Format == DXGI_FORMAT_R32_TYPELESS)
+			internal_desc.Buffer.Flags |= D3D12_BUFFER_SRV_FLAG_RAW;
+		else
+			internal_desc.Buffer.Flags &= ~D3D12_BUFFER_SRV_FLAG_RAW;
 		break;
 	case api::resource_view_type::texture_1d:
 		internal_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
@@ -665,6 +699,10 @@ void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &d
 			internal_desc.TextureCubeArray.NumCubes = desc.texture.layer_count / 6;
 		// Missing fields: D3D12_TEXCUBE_ARRAY_SRV::ResourceMinLODClamp
 		break;
+	case api::resource_view_type::acceleration_structure:
+		internal_desc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+		internal_desc.RaytracingAccelerationStructure.Location = desc.buffer.offset;
+		break;
 	}
 }
 void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_UNORDERED_ACCESS_VIEW_DESC &internal_desc)
@@ -678,7 +716,12 @@ void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &d
 		internal_desc.Buffer.FirstElement = desc.buffer.offset;
 		assert(desc.buffer.size <= std::numeric_limits<UINT>::max());
 		internal_desc.Buffer.NumElements = static_cast<UINT>(desc.buffer.size);
-		// Missing fields: D3D12_BUFFER_UAV::StructureByteStride, D3D12_BUFFER_UAV::CounterOffsetInBytes, D3D12_BUFFER_UAV::Flags
+		// Missing fields: D3D12_BUFFER_UAV::StructureByteStride, D3D12_BUFFER_UAV::CounterOffsetInBytes
+
+		if (internal_desc.Format == DXGI_FORMAT_R32_TYPELESS)
+			internal_desc.Buffer.Flags |= D3D12_BUFFER_UAV_FLAG_RAW;
+		else
+			internal_desc.Buffer.Flags &= ~D3D12_BUFFER_UAV_FLAG_RAW;
 		break;
 	case api::resource_view_type::texture_1d:
 		internal_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
@@ -707,6 +750,43 @@ void reshade::d3d12::convert_resource_view_desc(const api::resource_view_desc &d
 		internal_desc.Texture3D.WSize = desc.texture.layer_count;
 		break;
 	}
+}
+reshade::api::resource_view_desc reshade::d3d12::convert_resource_view_desc(const D3D12_RESOURCE_DESC &resource_desc)
+{
+	api::resource_view_desc desc = {};
+	switch (resource_desc.Dimension)
+	{
+	case D3D12_RESOURCE_DIMENSION_BUFFER:
+		desc.type = api::resource_view_type::buffer;
+		desc.buffer.offset = 0;
+		desc.buffer.size = UINT64_MAX;
+		break;
+	case D3D12_RESOURCE_DIMENSION_TEXTURE1D:
+		desc.type = api::resource_view_type::texture_1d;
+		desc.texture.first_level = 0;
+		desc.texture.level_count = UINT32_MAX;
+		desc.texture.first_layer = 0;
+		desc.texture.layer_count = UINT32_MAX;
+		break;
+	case D3D12_RESOURCE_DIMENSION_TEXTURE2D:
+		desc.type = api::resource_view_type::texture_2d;
+		desc.texture.first_level = 0;
+		desc.texture.level_count = UINT32_MAX;
+		desc.texture.first_layer = 0;
+		desc.texture.layer_count = UINT32_MAX;
+		break;
+	case D3D12_RESOURCE_DIMENSION_TEXTURE3D:
+		desc.type = api::resource_view_type::texture_3d;
+		desc.texture.first_level = 0;
+		desc.texture.level_count = UINT32_MAX;
+		desc.texture.first_layer = 0;
+		desc.texture.layer_count = UINT32_MAX;
+		break;
+	}
+
+	desc.format = convert_format(resource_desc.Format);
+
+	return desc;
 }
 reshade::api::resource_view_desc reshade::d3d12::convert_resource_view_desc(const D3D12_DEPTH_STENCIL_VIEW_DESC &internal_desc)
 {
@@ -754,6 +834,11 @@ reshade::api::resource_view_desc reshade::d3d12::convert_resource_view_desc(cons
 	desc.texture.level_count = 1;
 	switch (internal_desc.ViewDimension)
 	{
+	case D3D12_RTV_DIMENSION_BUFFER:
+		desc.type = api::resource_view_type::buffer;
+		desc.buffer.offset = internal_desc.Buffer.FirstElement;
+		desc.buffer.size = internal_desc.Buffer.NumElements;
+		break;
 	case D3D12_RTV_DIMENSION_TEXTURE1D:
 		desc.type = api::resource_view_type::texture_1d;
 		desc.texture.first_level = internal_desc.Texture1D.MipSlice;
@@ -802,7 +887,8 @@ reshade::api::resource_view_desc reshade::d3d12::convert_resource_view_desc(cons
 		desc.type = api::resource_view_type::buffer;
 		desc.buffer.offset = internal_desc.Buffer.FirstElement;
 		desc.buffer.size = internal_desc.Buffer.NumElements;
-		// Missing fields: D3D12_BUFFER_SRV::StructureByteStride, D3D12_BUFFER_SRV::Flags
+		assert(((internal_desc.Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW) != 0) == (internal_desc.Format == DXGI_FORMAT_R32_TYPELESS));
+		// Missing fields: D3D12_BUFFER_SRV::StructureByteStride
 		break;
 	case D3D12_SRV_DIMENSION_TEXTURE1D:
 		desc.type = api::resource_view_type::texture_1d;
@@ -864,7 +950,9 @@ reshade::api::resource_view_desc reshade::d3d12::convert_resource_view_desc(cons
 		// Missing fields: D3D12_TEXCUBE_ARRAY_SRV::ResourceMinLODClamp
 		break;
 	case D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE:
+		desc.type = api::resource_view_type::acceleration_structure;
 		desc.buffer.offset = internal_desc.RaytracingAccelerationStructure.Location;
+		desc.buffer.size = UINT64_MAX;
 		break;
 	}
 	return desc;
@@ -880,7 +968,8 @@ reshade::api::resource_view_desc reshade::d3d12::convert_resource_view_desc(cons
 		desc.type = api::resource_view_type::buffer;
 		desc.buffer.offset = internal_desc.Buffer.FirstElement;
 		desc.buffer.size = internal_desc.Buffer.NumElements;
-		// Missing fields: D3D12_BUFFER_UAV::StructureByteStride, D3D12_BUFFER_UAV::CounterOffsetInBytes, D3D12_BUFFER_UAV::Flags
+		assert(((internal_desc.Buffer.Flags & D3D12_BUFFER_UAV_FLAG_RAW) != 0) == (internal_desc.Format == DXGI_FORMAT_R32_TYPELESS));
+		// Missing fields: D3D12_BUFFER_UAV::StructureByteStride, D3D12_BUFFER_UAV::CounterOffsetInBytes
 		break;
 	case D3D12_UAV_DIMENSION_TEXTURE1D:
 		desc.type = api::resource_view_type::texture_1d;
@@ -926,43 +1015,33 @@ reshade::api::shader_desc reshade::d3d12::convert_shader_desc(const D3D12_SHADER
 	return desc;
 }
 
-void reshade::d3d12::convert_input_layout_desc(uint32_t count, const api::input_element *elements, std::vector<D3D12_INPUT_ELEMENT_DESC> &internal_elements)
+void reshade::d3d12::convert_input_element(const api::input_element &desc, D3D12_INPUT_ELEMENT_DESC &internal_desc)
 {
-	internal_elements.reserve(count);
+	internal_desc.SemanticName = desc.semantic;
+	internal_desc.SemanticIndex = desc.semantic_index;
+	internal_desc.Format = convert_format(desc.format);
+	internal_desc.InputSlot = desc.buffer_binding;
+	internal_desc.AlignedByteOffset = desc.offset;
+	internal_desc.InputSlotClass = desc.instance_step_rate > 0 ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+	internal_desc.InstanceDataStepRate = desc.instance_step_rate;
 
-	for (uint32_t i = 0; i < count; ++i)
+	if (desc.semantic == nullptr)
 	{
-		const api::input_element &element = elements[i];
-
-		D3D12_INPUT_ELEMENT_DESC &internal_element = internal_elements.emplace_back();
-		internal_element.SemanticName = element.semantic;
-		internal_element.SemanticIndex = element.semantic_index;
-		internal_element.Format = convert_format(element.format);
-		internal_element.InputSlot = element.buffer_binding;
-		internal_element.AlignedByteOffset = element.offset;
-		internal_element.InputSlotClass = element.instance_step_rate > 0 ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-		internal_element.InstanceDataStepRate = element.instance_step_rate;
+		// Dozen names vertex inputs TEXCOORDx, so follow a similar logic
+		internal_desc.SemanticName = "TEXCOORD";
+		internal_desc.SemanticIndex = desc.location;
 	}
 }
-std::vector<reshade::api::input_element> reshade::d3d12::convert_input_layout_desc(UINT count, const D3D12_INPUT_ELEMENT_DESC *internal_elements)
+reshade::api::input_element reshade::d3d12::convert_input_element(const D3D12_INPUT_ELEMENT_DESC &internal_desc)
 {
-	std::vector<api::input_element> elements;
-	elements.reserve(count);
-
-	for (UINT i = 0; i < count; ++i)
-	{
-		const D3D12_INPUT_ELEMENT_DESC &internal_element = internal_elements[i];
-
-		api::input_element &element = elements.emplace_back();
-		element.semantic = internal_element.SemanticName;
-		element.semantic_index = internal_element.SemanticIndex;
-		element.format = convert_format(internal_element.Format);
-		element.buffer_binding = internal_element.InputSlot;
-		element.offset = internal_element.AlignedByteOffset;
-		element.instance_step_rate = internal_element.InstanceDataStepRate;
-	}
-
-	return elements;
+	api::input_element desc = {};
+	desc.semantic = internal_desc.SemanticName;
+	desc.semantic_index = internal_desc.SemanticIndex;
+	desc.format = convert_format(internal_desc.Format);
+	desc.buffer_binding = internal_desc.InputSlot;
+	desc.offset = internal_desc.AlignedByteOffset;
+	desc.instance_step_rate = internal_desc.InstanceDataStepRate;
+	return desc;
 }
 
 void reshade::d3d12::convert_stream_output_desc(const api::stream_output_desc &desc, D3D12_STREAM_OUTPUT_DESC &internal_desc)
@@ -978,10 +1057,22 @@ reshade::api::stream_output_desc reshade::d3d12::convert_stream_output_desc(cons
 void reshade::d3d12::convert_blend_desc(const api::blend_desc &desc, D3D12_BLEND_DESC &internal_desc)
 {
 	internal_desc.AlphaToCoverageEnable = desc.alpha_to_coverage_enable;
-	internal_desc.IndependentBlendEnable = TRUE;
+	internal_desc.IndependentBlendEnable = FALSE;
 
 	for (UINT i = 0; i < 8; ++i)
 	{
+		if (desc.blend_enable[i] != desc.blend_enable[0] ||
+			desc.logic_op_enable[i] != desc.logic_op_enable[0] ||
+			desc.source_color_blend_factor[i] != desc.source_color_blend_factor[0] ||
+			desc.dest_color_blend_factor[i] != desc.dest_color_blend_factor[0] ||
+			desc.color_blend_op[i] != desc.color_blend_op[0] ||
+			desc.source_alpha_blend_factor[i] != desc.source_alpha_blend_factor[0] ||
+			desc.dest_alpha_blend_factor[i] != desc.dest_alpha_blend_factor[0] ||
+			desc.alpha_blend_op[i] != desc.alpha_blend_op[0] ||
+			desc.logic_op[i] != desc.logic_op[0] ||
+			desc.render_target_write_mask[i] != desc.render_target_write_mask[0])
+			internal_desc.IndependentBlendEnable = TRUE;
+
 		internal_desc.RenderTarget[i].BlendEnable = desc.blend_enable[i];
 		internal_desc.RenderTarget[i].LogicOpEnable = desc.logic_op_enable[i];
 		internal_desc.RenderTarget[i].SrcBlend = convert_blend_factor(desc.source_color_blend_factor[i]);
@@ -1018,6 +1109,8 @@ reshade::api::blend_desc reshade::d3d12::convert_blend_desc(const D3D12_BLEND_DE
 		}
 		if (target.LogicOpEnable)
 		{
+			assert(!target.BlendEnable && !internal_desc.IndependentBlendEnable);
+
 			desc.logic_op[i] = convert_logic_op(target.LogicOp);
 		}
 
@@ -1531,8 +1624,40 @@ auto reshade::d3d12::convert_primitive_topology_type(D3D12_PRIMITIVE_TOPOLOGY_TY
 	}
 }
 
+auto reshade::d3d12::get_query_size(api::query_type type) -> std::pair<uint32_t, uint32_t>
+{
+	switch (type)
+	{
+	default:
+	case api::query_type::occlusion:
+	case api::query_type::binary_occlusion:
+	case api::query_type::timestamp:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(UINT64), 0u);
+	case api::query_type::pipeline_statistics:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS), 0u);
+	case api::query_type::stream_output_statistics_0:
+	case api::query_type::stream_output_statistics_1:
+	case api::query_type::stream_output_statistics_2:
+	case api::query_type::stream_output_statistics_3:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_QUERY_DATA_SO_STATISTICS), 0u);
+	case api::query_type::acceleration_structure_size:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE_DESC), 0u);
+	case api::query_type::acceleration_structure_compacted_size:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE_DESC), 0u);
+	case api::query_type::acceleration_structure_serialization_size:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC), offsetof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC, SerializedSizeInBytes));
+	case api::query_type::acceleration_structure_bottom_level_acceleration_structure_pointers:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC), offsetof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION_DESC, NumBottomLevelAccelerationStructurePointers));
+	}
+}
 auto reshade::d3d12::convert_query_type(api::query_type type) -> D3D12_QUERY_TYPE
 {
+	assert(
+		type != api::query_type::acceleration_structure_size &&
+		type != api::query_type::acceleration_structure_compacted_size &&
+		type != api::query_type::acceleration_structure_serialization_size &&
+		type != api::query_type::acceleration_structure_bottom_level_acceleration_structure_pointers);
+
 	return static_cast<D3D12_QUERY_TYPE>(type);
 }
 auto reshade::d3d12::convert_query_type(D3D12_QUERY_TYPE type) -> api::query_type
@@ -1582,17 +1707,20 @@ auto reshade::d3d12::convert_descriptor_type(api::descriptor_type type) -> D3D12
 {
 	switch (type)
 	{
+	case api::descriptor_type::sampler:
+		return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
 	default:
 		assert(false);
 		[[fallthrough]];
-	case api::descriptor_type::shader_resource_view:
+	case api::descriptor_type::buffer_shader_resource_view:
+	case api::descriptor_type::texture_shader_resource_view:
+	case api::descriptor_type::acceleration_structure:
 		return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	case api::descriptor_type::unordered_access_view:
+	case api::descriptor_type::buffer_unordered_access_view:
+	case api::descriptor_type::texture_unordered_access_view:
 		return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
 	case api::descriptor_type::constant_buffer:
 		return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-	case api::descriptor_type::sampler:
-		return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
 	}
 }
 auto reshade::d3d12::convert_descriptor_type(D3D12_DESCRIPTOR_RANGE_TYPE type) -> api::descriptor_type
@@ -1616,21 +1744,46 @@ auto reshade::d3d12::convert_descriptor_type_to_heap_type(api::descriptor_type t
 {
 	switch (type)
 	{
+	case api::descriptor_type::sampler:
+		return D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
 	default:
 		assert(false);
 		[[fallthrough]];
+	case api::descriptor_type::buffer_shader_resource_view:
+	case api::descriptor_type::buffer_unordered_access_view:
+	case api::descriptor_type::texture_shader_resource_view:
+	case api::descriptor_type::texture_unordered_access_view:
 	case api::descriptor_type::constant_buffer:
-	case api::descriptor_type::shader_resource_view:
-	case api::descriptor_type::unordered_access_view:
+	case api::descriptor_type::acceleration_structure:
 		return D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-	case api::descriptor_type::sampler:
-		return D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
 	}
 }
 
-auto reshade::d3d12::convert_shader_visibility(D3D12_SHADER_VISIBILITY visibility) -> api::shader_stage
+auto reshade::d3d12::convert_shader_visibility(api::shader_stage value) -> D3D12_SHADER_VISIBILITY
 {
-	switch (visibility)
+	switch (value)
+	{
+	default:
+		return D3D12_SHADER_VISIBILITY_ALL;
+	case api::shader_stage::vertex:
+		return D3D12_SHADER_VISIBILITY_VERTEX;
+	case api::shader_stage::hull:
+		return D3D12_SHADER_VISIBILITY_HULL;
+	case api::shader_stage::domain:
+		return D3D12_SHADER_VISIBILITY_DOMAIN;
+	case api::shader_stage::geometry:
+		return D3D12_SHADER_VISIBILITY_GEOMETRY;
+	case api::shader_stage::pixel:
+		return D3D12_SHADER_VISIBILITY_PIXEL;
+	case api::shader_stage::amplification:
+		return D3D12_SHADER_VISIBILITY_AMPLIFICATION;
+	case api::shader_stage::mesh:
+		return D3D12_SHADER_VISIBILITY_MESH;
+	}
+}
+auto reshade::d3d12::convert_shader_visibility(D3D12_SHADER_VISIBILITY value) -> api::shader_stage
+{
+	switch (value)
 	{
 	default:
 		assert(false);
@@ -1647,6 +1800,10 @@ auto reshade::d3d12::convert_shader_visibility(D3D12_SHADER_VISIBILITY visibilit
 		return api::shader_stage::geometry;
 	case D3D12_SHADER_VISIBILITY_PIXEL:
 		return api::shader_stage::pixel;
+	case D3D12_SHADER_VISIBILITY_AMPLIFICATION:
+		return api::shader_stage::amplification;
+	case D3D12_SHADER_VISIBILITY_MESH:
+		return api::shader_stage::mesh;
 	}
 }
 
@@ -1714,4 +1871,179 @@ auto reshade::d3d12::convert_render_pass_store_op(D3D12_RENDER_PASS_ENDING_ACCES
 	case D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS:
 		return reshade::api::render_pass_store_op::no_access;
 	}
+}
+
+auto reshade::d3d12::convert_fence_flags(api::fence_flags value) -> D3D12_FENCE_FLAGS
+{
+	D3D12_FENCE_FLAGS result = D3D12_FENCE_FLAG_NONE;
+	if ((value & api::fence_flags::shared) != 0)
+		result |= D3D12_FENCE_FLAG_SHARED;
+	if ((value & api::fence_flags::non_monitored) != 0)
+		result |= D3D12_FENCE_FLAG_NON_MONITORED;
+	return result;
+}
+
+auto reshade::d3d12::convert_pipeline_flags(api::pipeline_flags value) -> D3D12_RAYTRACING_PIPELINE_FLAGS
+{
+	D3D12_RAYTRACING_PIPELINE_FLAGS result = D3D12_RAYTRACING_PIPELINE_FLAG_NONE;
+	if ((value & api::pipeline_flags::skip_triangles) != 0)
+		result |= D3D12_RAYTRACING_PIPELINE_FLAG_SKIP_TRIANGLES;
+	if ((value & api::pipeline_flags::skip_aabbs) != 0)
+		result |= D3D12_RAYTRACING_PIPELINE_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+
+	return result;
+}
+auto reshade::d3d12::convert_pipeline_flags(D3D12_RAYTRACING_PIPELINE_FLAGS value) -> api::pipeline_flags
+{
+	api::pipeline_flags result = api::pipeline_flags::none;
+	if ((value & D3D12_RAYTRACING_PIPELINE_FLAG_SKIP_TRIANGLES) != 0)
+		result |= api::pipeline_flags::skip_triangles;
+	if ((value & D3D12_RAYTRACING_PIPELINE_FLAG_SKIP_PROCEDURAL_PRIMITIVES) != 0)
+		result |= api::pipeline_flags::skip_aabbs;
+
+	return result;
+}
+auto reshade::d3d12::convert_acceleration_structure_type(api::acceleration_structure_type value) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE
+{
+	return static_cast<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE>(value);
+}
+auto reshade::d3d12::convert_acceleration_structure_type(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE value) -> api::acceleration_structure_type
+{
+	return static_cast<api::acceleration_structure_type>(value);
+}
+auto reshade::d3d12::convert_acceleration_structure_copy_mode(api::acceleration_structure_copy_mode value) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE
+{
+	switch (value)
+	{
+	case api::acceleration_structure_copy_mode::clone:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE;
+	case api::acceleration_structure_copy_mode::compact:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT;
+	case api::acceleration_structure_copy_mode::serialize:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_SERIALIZE;
+	case api::acceleration_structure_copy_mode::deserialize:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_DESERIALIZE;
+	default:
+		assert(false);
+		return static_cast<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE>(UINT_MAX);
+	}
+}
+auto reshade::d3d12::convert_acceleration_structure_copy_mode(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE value) -> api::acceleration_structure_copy_mode
+{
+	switch (value)
+	{
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE:
+		return api::acceleration_structure_copy_mode::clone;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT:
+		return api::acceleration_structure_copy_mode::compact;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_SERIALIZE:
+		return api::acceleration_structure_copy_mode::serialize;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_DESERIALIZE:
+		return api::acceleration_structure_copy_mode::deserialize;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_VISUALIZATION_DECODE_FOR_TOOLS:
+	default:
+		assert(false);
+		return static_cast<api::acceleration_structure_copy_mode>(UINT_MAX);
+	}
+}
+auto reshade::d3d12::convert_acceleration_structure_build_flags(api::acceleration_structure_build_flags value, api::acceleration_structure_build_mode mode) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS
+{
+	auto result = static_cast<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS>(value);
+
+	if (mode == api::acceleration_structure_build_mode::update)
+		result |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+	return result;
+}
+auto reshade::d3d12::convert_acceleration_structure_build_flags(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS value) -> api::acceleration_structure_build_flags
+{
+	return static_cast<api::acceleration_structure_build_flags>(value & ~D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE);
+}
+auto reshade::d3d12::convert_acceleration_structure_post_build_info_type(api::query_type value) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE
+{
+	switch (value)
+	{
+	case api::query_type::acceleration_structure_size:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE;
+	case api::query_type::acceleration_structure_compacted_size:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+	case api::query_type::acceleration_structure_serialization_size:
+	case api::query_type::acceleration_structure_bottom_level_acceleration_structure_pointers:
+		return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION;
+	default:
+		assert(false);
+		return static_cast<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE>(UINT_MAX);
+	}
+}
+auto reshade::d3d12::convert_acceleration_structure_post_build_info_type(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE value) -> api::query_type
+{
+	switch (value)
+	{
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE:
+		return api::query_type::acceleration_structure_compacted_size;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION:
+		return api::query_type::acceleration_structure_serialization_size;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_CURRENT_SIZE:
+		return api::query_type::acceleration_structure_size;
+	case D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TOOLS_VISUALIZATION:
+	default:
+		assert(false);
+		return static_cast<api::query_type>(UINT_MAX);
+	}
+}
+
+void reshade::d3d12::convert_acceleration_structure_build_input(const api::acceleration_structure_build_input &build_input, D3D12_RAYTRACING_GEOMETRY_DESC &geometry)
+{
+	assert(build_input.type != api::acceleration_structure_build_input_type::instances);
+	geometry.Type = static_cast<D3D12_RAYTRACING_GEOMETRY_TYPE>(build_input.type);
+
+	switch (geometry.Type)
+	{
+	case D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES:
+		geometry.Triangles.Transform3x4 = (build_input.triangles.transform_buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.triangles.transform_buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.triangles.transform_offset;
+		geometry.Triangles.IndexFormat = convert_format(build_input.triangles.index_format);
+		geometry.Triangles.VertexFormat = convert_format(build_input.triangles.vertex_format);
+		geometry.Triangles.IndexCount = build_input.triangles.index_count;
+		geometry.Triangles.VertexCount = build_input.triangles.vertex_count;
+		geometry.Triangles.IndexBuffer = (build_input.triangles.index_buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.triangles.index_buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.triangles.index_offset;
+		geometry.Triangles.VertexBuffer.StartAddress = (build_input.triangles.vertex_buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.triangles.vertex_buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.triangles.vertex_offset;
+		geometry.Triangles.VertexBuffer.StrideInBytes = build_input.triangles.vertex_stride;
+		break;
+	case D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS:
+		geometry.AABBs.AABBCount = build_input.aabbs.count;
+		geometry.AABBs.AABBs.StartAddress = (build_input.aabbs.buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.aabbs.buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.aabbs.offset;
+		geometry.AABBs.AABBs.StrideInBytes = build_input.aabbs.stride;
+		break;
+	}
+
+	geometry.Flags = static_cast<D3D12_RAYTRACING_GEOMETRY_FLAGS>(build_input.flags);
+}
+reshade::api::acceleration_structure_build_input reshade::d3d12::convert_acceleration_structure_build_input(const D3D12_RAYTRACING_GEOMETRY_DESC &geometry)
+{
+	api::acceleration_structure_build_input result = {};
+	result.type = static_cast<api::acceleration_structure_build_input_type>(geometry.Type);
+
+	switch (geometry.Type)
+	{
+	case D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES:
+		result.triangles.vertex_offset = geometry.Triangles.VertexBuffer.StartAddress;
+		result.triangles.vertex_count = geometry.Triangles.VertexCount;
+		result.triangles.vertex_stride = geometry.Triangles.VertexBuffer.StrideInBytes;
+		result.triangles.vertex_format = convert_format(geometry.Triangles.VertexFormat);
+		result.triangles.index_offset = geometry.Triangles.IndexBuffer;
+		result.triangles.index_count = geometry.Triangles.IndexCount;
+		result.triangles.index_format = convert_format(geometry.Triangles.IndexFormat);
+		result.triangles.transform_offset = geometry.Triangles.Transform3x4;
+		break;
+	case D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS:
+		result.aabbs.offset = geometry.AABBs.AABBs.StartAddress;
+		assert(geometry.AABBs.AABBCount <= std::numeric_limits<uint32_t>::max());
+		result.aabbs.count = static_cast<uint32_t>(geometry.AABBs.AABBCount);
+		result.aabbs.stride = geometry.AABBs.AABBs.StrideInBytes;
+		break;
+	}
+
+	result.flags = static_cast<api::acceleration_structure_build_input_flags>(geometry.Flags);
+
+	return result;
 }

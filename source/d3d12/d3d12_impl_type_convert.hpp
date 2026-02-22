@@ -5,9 +5,10 @@
 
 #pragma once
 
+#include <d3d12.h>
 #include "reshade_api_pipeline.hpp"
 #include <vector>
-#include <d3d12.h>
+#include <limits>
 
 namespace reshade::d3d12
 {
@@ -29,16 +30,18 @@ namespace reshade::d3d12
 
 	struct query_heap_extra_data
 	{
-		UINT size;
+		api::query_type type;
+		UINT count;
 		ID3D12Resource *readback_resource;
 		std::pair<ID3D12Fence *, UINT64> *fences;
 	};
 
-	extern const GUID extra_data_guid;
+	inline constexpr GUID extra_data_guid = { 0xB2257A30, 0x4014, 0x46EA, { 0xBD, 0x88, 0xDE, 0xC2, 0x1D, 0xB6, 0xA0, 0x2B } }; // {B2257A30-4014-46EA-BD88-DEC21DB6A02B}
 
 	auto convert_format(api::format format) -> DXGI_FORMAT;
 	auto convert_format(DXGI_FORMAT format) -> api::format;
 
+	auto convert_color_space(api::color_space type) -> DXGI_COLOR_SPACE_TYPE;
 	auto convert_color_space(DXGI_COLOR_SPACE_TYPE type) -> api::color_space;
 
 	auto convert_access_to_usage(D3D12_BARRIER_ACCESS access) -> api::resource_usage;
@@ -78,6 +81,7 @@ namespace reshade::d3d12
 	void convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_RENDER_TARGET_VIEW_DESC &internal_desc);
 	void convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_SHADER_RESOURCE_VIEW_DESC &internal_desc);
 	void convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_UNORDERED_ACCESS_VIEW_DESC &internal_desc);
+	api::resource_view_desc convert_resource_view_desc(const D3D12_RESOURCE_DESC &resource_desc);
 	api::resource_view_desc convert_resource_view_desc(const D3D12_DEPTH_STENCIL_VIEW_DESC &internal_desc);
 	api::resource_view_desc convert_resource_view_desc(const D3D12_RENDER_TARGET_VIEW_DESC &internal_desc);
 	api::resource_view_desc convert_resource_view_desc(const D3D12_SHADER_RESOURCE_VIEW_DESC &internal_desc);
@@ -86,8 +90,8 @@ namespace reshade::d3d12
 	void convert_shader_desc(const api::shader_desc &desc, D3D12_SHADER_BYTECODE &internal_desc);
 	api::shader_desc convert_shader_desc(const D3D12_SHADER_BYTECODE &internal_desc);
 
-	void convert_input_layout_desc(uint32_t count, const api::input_element *elements, std::vector<D3D12_INPUT_ELEMENT_DESC> &internal_elements);
-	std::vector<api::input_element> convert_input_layout_desc(UINT count, const D3D12_INPUT_ELEMENT_DESC *internal_elements);
+	void convert_input_element(const api::input_element &desc, D3D12_INPUT_ELEMENT_DESC &internal_desc);
+	api::input_element convert_input_element(const D3D12_INPUT_ELEMENT_DESC &internal_desc);
 
 	void convert_stream_output_desc(const api::stream_output_desc &desc, D3D12_STREAM_OUTPUT_DESC &internal_desc);
 	api::stream_output_desc convert_stream_output_desc(const D3D12_STREAM_OUTPUT_DESC &internal_desc);
@@ -125,6 +129,7 @@ namespace reshade::d3d12
 	auto convert_primitive_topology_type(api::primitive_topology value) -> D3D12_PRIMITIVE_TOPOLOGY_TYPE;
 	auto convert_primitive_topology_type(D3D12_PRIMITIVE_TOPOLOGY_TYPE value) -> api::primitive_topology;
 
+	auto get_query_size(api::query_type type) -> std::pair<uint32_t, uint32_t>; // { struct size, offset in struct }
 	auto convert_query_type(api::query_type type) -> D3D12_QUERY_TYPE;
 	auto convert_query_type(D3D12_QUERY_TYPE type) -> api::query_type;
 	auto convert_query_type_to_heap_type(api::query_type type) -> D3D12_QUERY_HEAP_TYPE;
@@ -134,19 +139,38 @@ namespace reshade::d3d12
 	auto convert_descriptor_type(D3D12_DESCRIPTOR_RANGE_TYPE type) -> api::descriptor_type;
 	auto convert_descriptor_type_to_heap_type(api::descriptor_type type) -> D3D12_DESCRIPTOR_HEAP_TYPE;
 
-	auto convert_shader_visibility(D3D12_SHADER_VISIBILITY visibility) -> api::shader_stage;
+	auto convert_shader_visibility(api::shader_stage value) -> D3D12_SHADER_VISIBILITY;
+	auto convert_shader_visibility(D3D12_SHADER_VISIBILITY value) -> api::shader_stage;
 
 	auto convert_render_pass_load_op(api::render_pass_load_op value) -> D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE;
 	auto convert_render_pass_load_op(D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE value) -> api::render_pass_load_op;
 	auto convert_render_pass_store_op(api::render_pass_store_op value) -> D3D12_RENDER_PASS_ENDING_ACCESS_TYPE;
 	auto convert_render_pass_store_op(D3D12_RENDER_PASS_ENDING_ACCESS_TYPE value) -> api::render_pass_store_op;
 
+	auto convert_fence_flags(api::fence_flags value) -> D3D12_FENCE_FLAGS;
+
+	auto convert_pipeline_flags(api::pipeline_flags value) -> D3D12_RAYTRACING_PIPELINE_FLAGS;
+	auto convert_pipeline_flags(D3D12_RAYTRACING_PIPELINE_FLAGS value) -> api::pipeline_flags;
+	auto convert_acceleration_structure_type(api::acceleration_structure_type value) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE;
+	auto convert_acceleration_structure_type(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE value) -> api::acceleration_structure_type;
+	auto convert_acceleration_structure_copy_mode(api::acceleration_structure_copy_mode value) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE;
+	auto convert_acceleration_structure_copy_mode(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE value) -> api::acceleration_structure_copy_mode;
+	auto convert_acceleration_structure_build_flags(api::acceleration_structure_build_flags value, api::acceleration_structure_build_mode mode) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS;
+	auto convert_acceleration_structure_build_flags(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS value) -> api::acceleration_structure_build_flags;
+	auto convert_acceleration_structure_post_build_info_type(api::query_type value) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE;
+	auto convert_acceleration_structure_post_build_info_type(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE value) -> api::query_type;
+
+	void convert_acceleration_structure_build_input(const api::acceleration_structure_build_input &build_input, D3D12_RAYTRACING_GEOMETRY_DESC &geometry);
+	api::acceleration_structure_build_input convert_acceleration_structure_build_input(const D3D12_RAYTRACING_GEOMETRY_DESC &geometry);
+
 	inline auto to_handle(ID3D12Resource *ptr) { return api::resource { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(D3D12_CPU_DESCRIPTOR_HANDLE handle) { return api::resource_view { static_cast<uint64_t>(handle.ptr) }; }
 	inline auto to_handle(ID3D12PipelineState *ptr) { return api::pipeline { reinterpret_cast<uintptr_t>(ptr) }; }
+	inline auto to_handle(ID3D12StateObject *ptr) { return api::pipeline { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(ID3D12RootSignature *ptr) { return api::pipeline_layout { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(ID3D12QueryHeap *ptr) { return api::query_heap { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(ID3D12DescriptorHeap *ptr) { return api::descriptor_heap { reinterpret_cast<uintptr_t>(ptr) }; }
+	inline auto to_handle(ID3D12Fence *ptr) { return api::fence { reinterpret_cast<uintptr_t>(ptr) }; }
 }
 
 #pragma warning(push)
@@ -154,6 +178,9 @@ namespace reshade::d3d12
 template <D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type, typename T>
 struct alignas(void *) D3D12_PIPELINE_STATE_STREAM
 {
+	D3D12_PIPELINE_STATE_STREAM() {}
+	D3D12_PIPELINE_STATE_STREAM(const T &data) : data(data) {}
+
 	D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = Type;
 	T data = {};
 };
@@ -187,3 +214,9 @@ typedef D3D12_PIPELINE_STATE_STREAM<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS, D3D1
 typedef D3D12_PIPELINE_STATE_STREAM<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2, D3D12_DEPTH_STENCIL_DESC2> D3D12_PIPELINE_STATE_STREAM_DEPTH_STENCIL2;
 typedef D3D12_PIPELINE_STATE_STREAM<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1, D3D12_RASTERIZER_DESC1> D3D12_PIPELINE_STATE_STREAM_RASTERIZER1;
 typedef D3D12_PIPELINE_STATE_STREAM<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2, D3D12_RASTERIZER_DESC2> D3D12_PIPELINE_STATE_STREAM_RASTERIZER2;
+typedef D3D12_PIPELINE_STATE_STREAM<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SERIALIZED_ROOT_SIGNATURE, D3D12_SERIALIZED_ROOT_SIGNATURE_DESC> D3D12_PIPELINE_STATE_STREAM_SERIALIZED_ROOT_SIGNATURE;
+
+// vkd3d extension interfaces
+inline constexpr GUID IID_ID3D12DeviceExt = { 0x11ea7a1a, 0x0f6a, 0x49bf, { 0xb6, 0x12, 0x3e, 0x30, 0xf8, 0xe2, 0x01, 0xdd } }; // {11EA7A1A-0F6A-49BF-B612-3E30F8E201DD}
+inline constexpr GUID IID_ID3D12DeviceExt1 = { 0x099a73fd, 0x2199, 0x4f45, { 0xbf, 0x48, 0x0e, 0xb8, 0x6f, 0x6f, 0xdb, 0x65 } }; // {099A73FD-2199-4F45-BF48-0EB86F6FDB65}
+inline constexpr GUID IID_ID3D12GraphicsCommandListExt = { 0x77a86b09, 0x2bea, 0x4801, { 0xb8, 0x9a, 0x37, 0x64, 0x8e, 0x10, 0x4a, 0xf1 } }; // {77A86B09-2BEA-4801-B89A-37648E104AF1}

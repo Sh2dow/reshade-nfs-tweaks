@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include "dll_log.hpp"
 #include "vulkan_impl_device.hpp"
 #include "vulkan_impl_command_list_immediate.hpp"
+#include "dll_log.hpp"
 
 #define vk _device_impl->_dispatch_table
+
+thread_local reshade::vulkan::command_list_immediate_impl *reshade::vulkan::command_list_immediate_impl::s_last_immediate_command_list = nullptr;
 
 reshade::vulkan::command_list_immediate_impl::command_list_immediate_impl(device_impl *device, uint32_t queue_family_index, VkQueue queue) :
 	command_list_impl(device, VK_NULL_HANDLE),
@@ -35,6 +37,7 @@ reshade::vulkan::command_list_immediate_impl::command_list_immediate_impl(device
 		// The validation layers expect the loader to have set the dispatch pointer, but this does not happen when calling down the layer chain from here, so fix it
 		*reinterpret_cast<void **>(_cmd_buffers[i]) = *reinterpret_cast<void **>(device->_orig);
 
+#if VK_EXT_debug_utils
 		if (vk.SetDebugUtilsObjectNameEXT != nullptr)
 		{
 			std::string debug_name = "ReShade immediate command list";
@@ -47,6 +50,7 @@ reshade::vulkan::command_list_immediate_impl::command_list_immediate_impl(device
 
 			vk.SetDebugUtilsObjectNameEXT(_device_impl->_orig, &name_info);
 		}
+#endif
 
 		VkFenceCreateInfo create_info { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
 		create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Create signaled so waiting on it when no commands where submitted succeeds
@@ -69,9 +73,14 @@ reshade::vulkan::command_list_immediate_impl::command_list_immediate_impl(device
 
 	// Command buffer is now in the recording state
 	_orig = _cmd_buffers[_cmd_index];
+
+	s_last_immediate_command_list = this;
 }
 reshade::vulkan::command_list_immediate_impl::~command_list_immediate_impl()
 {
+	if (this == s_last_immediate_command_list)
+		s_last_immediate_command_list = nullptr;
+
 	for (VkFence fence : _cmd_fences)
 		vk.DestroyFence(_device_impl->_orig, fence, nullptr);
 	for (VkSemaphore semaphore : _cmd_semaphores)
@@ -84,8 +93,10 @@ reshade::vulkan::command_list_immediate_impl::~command_list_immediate_impl()
 	_orig = VK_NULL_HANDLE;
 }
 
-bool reshade::vulkan::command_list_immediate_impl::flush(VkSemaphore *wait_semaphores, uint32_t &num_wait_semaphores)
+bool reshade::vulkan::command_list_immediate_impl::flush(VkSubmitInfo &semaphore_info)
 {
+	s_last_immediate_command_list = this;
+
 	if (!_has_commands)
 		return true;
 	_has_commands = false;
@@ -98,24 +109,23 @@ bool reshade::vulkan::command_list_immediate_impl::flush(VkSemaphore *wait_semap
 	// Submit all asynchronous commands in one batch to the current queue
 	if (vk.EndCommandBuffer(_orig) != VK_SUCCESS)
 	{
-		LOG(ERROR) << "Failed to close immediate command list!";
+		log::message(log::level::error, "Failed to close immediate command list!");
 
-		// Have to reset the command buffer when closing it was unsuccessfull
+		// Have to reset the command buffer when closing it was unsuccessful
 		vk.BeginCommandBuffer(_orig, &begin_info);
 		return false;
 	}
 
 	VkSubmitInfo submit_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	submit_info.waitSemaphoreCount = semaphore_info.waitSemaphoreCount;
+	submit_info.pWaitSemaphores = semaphore_info.pWaitSemaphores;
+	submit_info.pWaitDstStageMask = semaphore_info.pWaitDstStageMask;
 	submit_info.commandBufferCount = 1;
 	submit_info.pCommandBuffers = &_orig;
 
-	temp_mem<VkPipelineStageFlags> wait_stages(num_wait_semaphores);
-	std::fill_n(wait_stages.p, num_wait_semaphores, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-	if (num_wait_semaphores != 0)
+	if (semaphore_info.waitSemaphoreCount != 0 ||
+		semaphore_info.signalSemaphoreCount != 0) // Handle case where this is called from 'command_queue_impl::signal'
 	{
-		submit_info.waitSemaphoreCount = num_wait_semaphores;
-		submit_info.pWaitSemaphores = wait_semaphores;
-		submit_info.pWaitDstStageMask = wait_stages.p;
 		submit_info.signalSemaphoreCount = 1;
 		submit_info.pSignalSemaphores = &_cmd_semaphores[_cmd_index];
 	}
@@ -125,21 +135,19 @@ bool reshade::vulkan::command_list_immediate_impl::flush(VkSemaphore *wait_semap
 
 	if (vk.QueueSubmit(_parent_queue, 1, &submit_info, _cmd_fences[_cmd_index]) != VK_SUCCESS)
 	{
-		LOG(ERROR) << "Failed to submit immediate command list!";
+		log::message(log::level::error, "Failed to submit immediate command list!");
 
-		// Have to reset the command buffer when submitting it was unsuccessfull
+		// Have to reset the command buffer when submitting it was unsuccessful
 		vk.BeginCommandBuffer(_orig, &begin_info);
 		return false;
 	}
 
-	// Only signal and wait on a semaphore if the submit this flush is executed in originally did
-	if (num_wait_semaphores != 0)
-	{
-		// This queue submit now waits on the requested wait semaphores
-		// The next queue submit should therefore wait on the semaphore that was signaled by this submit
-		wait_semaphores[0] = _cmd_semaphores[_cmd_index];
-		num_wait_semaphores = 1;
-	}
+	// This queue submit now waits on the requested wait semaphores
+	// The next queue submit should therefore wait on the semaphore that was signaled by this submit
+	semaphore_info.waitSemaphoreCount = submit_info.signalSemaphoreCount;
+	semaphore_info.pWaitSemaphores = submit_info.pSignalSemaphores;
+	static const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	semaphore_info.pWaitDstStageMask = &wait_stage;
 
 	// Continue with next command buffer now that the current one was submitted
 	_cmd_index = (_cmd_index + 1) % NUM_COMMAND_FRAMES;
@@ -152,7 +160,10 @@ bool reshade::vulkan::command_list_immediate_impl::flush(VkSemaphore *wait_semap
 
 	// Command buffer is now ready for a reset
 	if (vk.BeginCommandBuffer(_cmd_buffers[_cmd_index], &begin_info) != VK_SUCCESS)
+	{
+		log::message(log::level::error, "Failed to reset immediate command list!");
 		return false;
+	}
 
 	// Command buffer is now in the recording state
 	_orig = _cmd_buffers[_cmd_index];
@@ -166,8 +177,8 @@ bool reshade::vulkan::command_list_immediate_impl::flush_and_wait()
 	// Index is updated during flush below, so keep track of the current one to wait on
 	const uint32_t cmd_index_to_wait_on = _cmd_index;
 
-	uint32_t num_wait_semaphores = 0; // No semaphores to wait on
-	if (!flush(nullptr, num_wait_semaphores))
+	VkSubmitInfo submit_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+	if (!flush(submit_info))
 		return false;
 
 	// Wait for the submitted work to finish and reset fence again for next use

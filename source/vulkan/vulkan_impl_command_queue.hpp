@@ -6,6 +6,7 @@
 #pragma once
 
 #include "vulkan_impl_command_list_immediate.hpp"
+#include <mutex>
 
 namespace reshade::vulkan
 {
@@ -22,7 +23,7 @@ namespace reshade::vulkan
 		void wait_idle() const final;
 
 		void flush_immediate_command_list() const final;
-		void flush_immediate_command_list(VkSemaphore *wait_semaphores, uint32_t &num_wait_semaphores) const;
+		void flush_immediate_command_list(VkSubmitInfo &semaphore_info) const;
 
 		api::command_list *get_immediate_command_list() final { return _immediate_cmd_list; }
 
@@ -30,10 +31,20 @@ namespace reshade::vulkan
 		void end_debug_event() final;
 		void insert_debug_marker(const char *label, const float color[4]) final;
 
+		bool wait(api::fence fence, uint64_t value) final;
+		bool signal(api::fence fence, uint64_t value) final;
+		bool wait_and_signal(VkSubmitInfo &semaphore_info);
+
+		uint64_t get_timestamp_frequency() const final;
+
+		mutable std::recursive_mutex _mutex;
+
 	private:
 		device_impl *const _device_impl;
 		command_list_immediate_impl *_immediate_cmd_list = nullptr;
-		const VkQueueFlags _queue_flags;
+		VkQueueFamilyProperties _queue_family_props = {};
+		uint32_t _signal_index = 0;
+		VkSemaphore _signal_semaphores[4] = {};
 	};
 
 	template <>
@@ -41,6 +52,7 @@ namespace reshade::vulkan
 	{
 		using Handle = VkQueue;
 
-		object_data(device_impl *device, uint32_t queue_family_index, const VkQueueFamilyProperties &queue_family, VkQueue queue) : command_queue_impl(device, queue_family_index, queue_family, queue) {}
+		object_data(device_impl *device, uint32_t queue_family_index, const VkQueueFamilyProperties &queue_family, VkQueue queue) :
+			command_queue_impl(device, queue_family_index, queue_family, queue) {}
 	};
 }

@@ -6,26 +6,65 @@
 #include "d3d10_device.hpp"
 #include "d3d10_resource.hpp"
 #include "d3d10_impl_type_convert.hpp"
-#include "dll_log.hpp" // Include late to get HRESULT log overloads
+#include "dll_log.hpp" // Include late to get 'hr_to_string' helper function
 #include "com_utils.hpp"
 #include "hook_manager.hpp"
+#include "addon_manager.hpp"
 
 using reshade::d3d10::to_handle;
 
-D3D10Device::D3D10Device(IDXGIDevice1 *original_dxgi_device, ID3D10Device1 *original) :
-	DXGIDevice(original_dxgi_device), device_impl(original)
+D3D10Device::D3D10Device(IDXGIAdapter *adapter, IDXGIDevice1 *original_dxgi_device, ID3D10Device1 *original) :
+	DXGIDevice(adapter, original_dxgi_device), device_impl(original)
 {
 	assert(_orig != nullptr);
 
 	// Add proxy object to the private data of the device, so that it can be retrieved again when only the original device is available
 	D3D10Device *const device_proxy = this;
 	_orig->SetPrivateData(__uuidof(D3D10Device), sizeof(device_proxy), &device_proxy);
+
+#if RESHADE_ADDON
+	reshade::load_addons();
+
+	reshade::invoke_addon_event<reshade::addon_event::init_device>(this);
+
+	const reshade::api::pipeline_layout_param global_pipeline_layout_params[3] = {
+		reshade::api::descriptor_range { 0, 0, 0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, reshade::api::shader_stage::all, 1, reshade::api::descriptor_type::sampler },
+		reshade::api::descriptor_range { 0, 0, 0, D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, reshade::api::shader_stage::all, 1, reshade::api::descriptor_type::shader_resource_view },
+		reshade::api::descriptor_range { 0, 0, 0, D3D10_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, reshade::api::shader_stage::all, 1, reshade::api::descriptor_type::constant_buffer },
+	};
+	device_impl::create_pipeline_layout(static_cast<uint32_t>(std::size(global_pipeline_layout_params)), global_pipeline_layout_params, &_global_pipeline_layout);
+	reshade::invoke_addon_event<reshade::addon_event::init_pipeline_layout>(this, static_cast<uint32_t>(std::size(global_pipeline_layout_params)), global_pipeline_layout_params, _global_pipeline_layout);
+
+	reshade::invoke_addon_event<reshade::addon_event::init_command_list>(this);
+	reshade::invoke_addon_event<reshade::addon_event::init_command_queue>(this);
+#endif
+}
+D3D10Device::~D3D10Device()
+{
+#if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::destroy_command_queue>(this);
+	reshade::invoke_addon_event<reshade::addon_event::destroy_command_list>(this);
+
+	// Ensure all objects referenced by the device are destroyed before the 'destroy_device' event is called
+	_orig->ClearState();
+	_orig->Flush();
+
+	reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline_layout>(this, _global_pipeline_layout);
+	device_impl::destroy_pipeline_layout(_global_pipeline_layout);
+
+	reshade::invoke_addon_event<reshade::addon_event::destroy_device>(this);
+
+	reshade::unload_addons();
+#endif
+
+	// Remove pointer to this proxy object from the private data of the device (in case the device unexpectedly survives)
+	_orig->SetPrivateData(__uuidof(D3D10Device), 0, nullptr);
 }
 
 bool D3D10Device::check_and_upgrade_interface(REFIID riid)
 {
-	if (riid == __uuidof(ID3D10Device) ||
-		riid == __uuidof(ID3D10Device1))
+	if (riid == __uuidof(ID3D10Device) || // {9B7E4C0F-342C-4106-A19F-4F2704F689F0}
+		riid == __uuidof(ID3D10Device1))  // {9B7E4C8F-342C-4106-A19F-4F2704F689F0}
 		return true;
 
 	return false;
@@ -43,6 +82,16 @@ HRESULT STDMETHODCALLTYPE D3D10Device::QueryInterface(REFIID riid, void **ppvObj
 		return S_OK;
 	}
 
+	// Do not proxy calls coming from DXGI
+	// The 'IDXGIOutput1::DuplicateOutput' implementation for example queries the device, then gets the adapter from the device and attempts to call an internal function on that adapter object, which crashes if it is the proxied object
+	extern std::filesystem::path get_system_path();
+	if (HMODULE return_module = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(_ReturnAddress()), &return_module) &&
+		return_module == GetModuleHandleW((get_system_path() / L"dxgi.dll").c_str()))
+	{
+		return _orig->QueryInterface(riid, ppvObj);
+	}
+
 	if (check_and_upgrade_interface(riid))
 	{
 		AddRef();
@@ -56,6 +105,14 @@ HRESULT STDMETHODCALLTYPE D3D10Device::QueryInterface(REFIID riid, void **ppvObj
 	{
 		AddRef();
 		*ppvObj = static_cast<IDXGIDevice1 *>(this);
+		return S_OK;
+	}
+
+	// Interface ID to query the original object from a proxy object
+	if (riid == IID_UnwrappedObject)
+	{
+		_orig->AddRef();
+		*ppvObj = _orig;
 		return S_OK;
 	}
 
@@ -80,91 +137,22 @@ ULONG   STDMETHODCALLTYPE D3D10Device::Release()
 		return ref;
 	}
 
-	// Remove pointer to this proxy object from the private data of the device (in case the device unexpectedly survives)
-	_orig->SetPrivateData(__uuidof(D3D10Device), 0, nullptr);
-
 	const auto orig = _orig;
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Destroying " << "ID3D10Device1" << " object " << static_cast<ID3D10Device *>(this) << " (" << orig << ") and " <<
-		"IDXGIDevice" << DXGIDevice::_interface_version << " object " << static_cast<IDXGIDevice1 *>(this) << " (" << DXGIDevice::_orig << ").";
+	reshade::log::message(
+		reshade::log::level::debug,
+		"Destroying ID3D10Device1 object %p (%p) and IDXGIDevice%hu object %p (%p).",
+		static_cast<ID3D10Device *>(this), orig, DXGIDevice::_interface_version, static_cast<IDXGIDevice1 *>(this), DXGIDevice::_orig);
 #endif
-	delete this;
+	this->~D3D10Device();
 
 	const ULONG ref_orig = orig->Release();
 	if (ref_orig != 0) // Verify internal reference count
-		LOG(WARN) << "Reference count for " << "ID3D10Device1" << " object " << static_cast<ID3D10Device *>(this) << " (" << orig << ") is inconsistent (" << ref_orig << ").";
+		reshade::log::message(reshade::log::level::warning, "Reference count for ID3D10Device1 object %p (%p) is inconsistent (%lu).", static_cast<ID3D10Device *>(this), orig, ref_orig);
+	else
+		operator delete(this, sizeof(D3D10Device));
 	return 0;
 }
-
-#if RESHADE_ADDON >= 2
-void D3D10Device::invoke_bind_samplers_event(reshade::api::shader_stage stage, UINT first, UINT count, ID3D10SamplerState *const *objects)
-{
-	assert(objects != nullptr || count == 0);
-
-	if (!reshade::has_addon_event<reshade::addon_event::push_descriptors>())
-		return;
-
-#ifndef _WIN64
-	temp_mem<reshade::api::sampler, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT> descriptors_mem(count);
-	for (UINT i = 0; i < count; ++i)
-		descriptors_mem[i] = to_handle(objects[i]);
-	const auto descriptors = descriptors_mem.p;
-#else
-	static_assert(sizeof(*objects) == sizeof(reshade::api::sampler));
-	const auto descriptors = reinterpret_cast<const reshade::api::sampler *>(objects);
-#endif
-
-	reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
-		this,
-		stage,
-		// See global pipeline layout specified in 'device_impl::device_impl'
-		reshade::d3d10::global_pipeline_layout, 0,
-		reshade::api::descriptor_table_update { {}, first, 0, count, reshade::api::descriptor_type::sampler, descriptors });
-}
-void D3D10Device::invoke_bind_shader_resource_views_event(reshade::api::shader_stage stage, UINT first, UINT count, ID3D10ShaderResourceView *const *objects)
-{
-	assert(objects != nullptr || count == 0);
-
-	if (!reshade::has_addon_event<reshade::addon_event::push_descriptors>())
-		return;
-
-#ifndef _WIN64
-	temp_mem<reshade::api::resource_view, D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> descriptors_mem(count);
-	for (UINT i = 0; i < count; ++i)
-		descriptors_mem[i] = to_handle(objects[i]);
-	const auto descriptors = descriptors_mem.p;
-#else
-	static_assert(sizeof(*objects) == sizeof(reshade::api::resource_view));
-	const auto descriptors = reinterpret_cast<const reshade::api::resource_view *>(objects);
-#endif
-
-	reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
-		this,
-		stage,
-		// See global pipeline layout specified in 'device_impl::device_impl'
-		reshade::d3d10::global_pipeline_layout, 1,
-		reshade::api::descriptor_table_update { {}, first, 0, count, reshade::api::descriptor_type::shader_resource_view, descriptors });
-}
-void D3D10Device::invoke_bind_constant_buffers_event(reshade::api::shader_stage stage, UINT first, UINT count, ID3D10Buffer *const *objects)
-{
-	assert(objects != nullptr || count == 0);
-
-	if (!reshade::has_addon_event<reshade::addon_event::push_descriptors>())
-		return;
-
-	temp_mem<reshade::api::buffer_range, D3D10_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> descriptors_mem(count);
-	for (UINT i = 0; i < count; ++i)
-		descriptors_mem[i] = { to_handle(objects[i]), 0, UINT64_MAX };
-	const auto descriptors = descriptors_mem.p;
-
-	reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
-		this,
-		stage,
-		// See global pipeline layout specified in 'device_impl::device_impl'
-		reshade::d3d10::global_pipeline_layout, 2,
-		reshade::api::descriptor_table_update { {}, first, 0, count, reshade::api::descriptor_type::constant_buffer, descriptors });
-}
-#endif
 
 void    STDMETHODCALLTYPE D3D10Device::VSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D10Buffer *const *ppConstantBuffers)
 {
@@ -461,9 +449,9 @@ void    STDMETHODCALLTYPE D3D10Device::RSSetScissorRects(UINT NumRects, const D3
 }
 void    STDMETHODCALLTYPE D3D10Device::CopySubresourceRegion(ID3D10Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ, ID3D10Resource *pSrcResource, UINT SrcSubresource, const D3D10_BOX *pSrcBox)
 {
+#if RESHADE_ADDON >= 2
 	assert(pDstResource != nullptr && pSrcResource != nullptr);
 
-#if RESHADE_ADDON >= 2
 	if (reshade::has_addon_event<reshade::addon_event::copy_buffer_region>() ||
 		reshade::has_addon_event<reshade::addon_event::copy_texture_region>())
 	{
@@ -490,9 +478,9 @@ void    STDMETHODCALLTYPE D3D10Device::CopySubresourceRegion(ID3D10Resource *pDs
 
 			if (use_dst_box)
 			{
-				dst_box.left = static_cast<int32_t>(DstX);
-				dst_box.top = static_cast<int32_t>(DstY);
-				dst_box.front = static_cast<int32_t>(DstZ);
+				dst_box.left = DstX;
+				dst_box.top = DstY;
+				dst_box.front = DstZ;
 
 				if (pSrcBox != nullptr)
 				{
@@ -508,33 +496,33 @@ void    STDMETHODCALLTYPE D3D10Device::CopySubresourceRegion(ID3D10Resource *pDs
 
 					switch (type)
 					{
-						case D3D10_RESOURCE_DIMENSION_TEXTURE1D:
+					case D3D10_RESOURCE_DIMENSION_TEXTURE1D:
 						{
 							D3D10_TEXTURE1D_DESC desc;
 							static_cast<ID3D10Texture1D *>(pSrcResource)->GetDesc(&desc);
 							dst_box.right += desc.Width;
 							dst_box.bottom += 1;
 							dst_box.back += 1;
-							break;
 						}
-						case D3D10_RESOURCE_DIMENSION_TEXTURE2D:
+						break;
+					case D3D10_RESOURCE_DIMENSION_TEXTURE2D:
 						{
 							D3D10_TEXTURE2D_DESC desc;
 							static_cast<ID3D10Texture2D *>(pSrcResource)->GetDesc(&desc);
 							dst_box.right += desc.Width;
 							dst_box.bottom += desc.Height;
 							dst_box.back += 1;
-							break;
 						}
-						case D3D10_RESOURCE_DIMENSION_TEXTURE3D:
+						break;
+					case D3D10_RESOURCE_DIMENSION_TEXTURE3D:
 						{
 							D3D10_TEXTURE3D_DESC desc;
 							static_cast<ID3D10Texture3D *>(pSrcResource)->GetDesc(&desc);
 							dst_box.right += desc.Width;
 							dst_box.bottom += desc.Height;
 							dst_box.back += desc.Depth;
-							break;
 						}
+						break;
 					}
 				}
 			}
@@ -557,9 +545,9 @@ void    STDMETHODCALLTYPE D3D10Device::CopySubresourceRegion(ID3D10Resource *pDs
 }
 void    STDMETHODCALLTYPE D3D10Device::CopyResource(ID3D10Resource *pDstResource, ID3D10Resource *pSrcResource)
 {
+#if RESHADE_ADDON >= 2
 	assert(pDstResource != nullptr && pSrcResource != nullptr);
 
-#if RESHADE_ADDON >= 2
 	if (reshade::invoke_addon_event<reshade::addon_event::copy_resource>(this, to_handle(pSrcResource), to_handle(pDstResource)))
 		return;
 #endif
@@ -567,9 +555,9 @@ void    STDMETHODCALLTYPE D3D10Device::CopyResource(ID3D10Resource *pDstResource
 }
 void    STDMETHODCALLTYPE D3D10Device::UpdateSubresource(ID3D10Resource *pDstResource, UINT DstSubresource, const D3D10_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch)
 {
+#if RESHADE_ADDON >= 2
 	assert(pDstResource != nullptr);
 
-#if RESHADE_ADDON >= 2
 	if (reshade::has_addon_event<reshade::addon_event::update_buffer_region>() ||
 		reshade::has_addon_event<reshade::addon_event::update_texture_region>())
 	{
@@ -821,13 +809,13 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBuffer(const D3D10_BUFFER_DESC *pDe
 	{
 		ID3D10Buffer *const resource = *ppBuffer;
 
-		reshade::hooks::install("ID3D10Buffer::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D10Resource_GetDevice));
+		reshade::hooks::install("ID3D10Buffer::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D10Resource_GetDevice);
 
 #if RESHADE_ADDON >= 2
 		if (reshade::has_addon_event<reshade::addon_event::map_buffer_region>())
-			reshade::hooks::install("ID3D10Buffer::Map", reshade::hooks::vtable_from_instance(resource), 10, reinterpret_cast<reshade::hook::address>(&ID3D10Buffer_Map));
+			reshade::hooks::install("ID3D10Buffer::Map", reshade::hooks::vtable_from_instance(resource), 10, &ID3D10Buffer_Map);
 		if (reshade::has_addon_event<reshade::addon_event::unmap_buffer_region>())
-			reshade::hooks::install("ID3D10Buffer::Unmap", reshade::hooks::vtable_from_instance(resource), 11, reinterpret_cast<reshade::hook::address>(&ID3D10Buffer_Unmap));
+			reshade::hooks::install("ID3D10Buffer::Unmap", reshade::hooks::vtable_from_instance(resource), 11, &ID3D10Buffer_Unmap);
 #endif
 
 #if RESHADE_ADDON
@@ -844,7 +832,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBuffer(const D3D10_BUFFER_DESC *pDe
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateBuffer" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateBuffer failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -883,13 +871,13 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture1D(const D3D10_TEXTURE1D_DES
 	{
 		ID3D10Texture1D *const resource = *ppTexture1D;
 
-		reshade::hooks::install("ID3D10Texture1D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D10Resource_GetDevice));
+		reshade::hooks::install("ID3D10Texture1D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D10Resource_GetDevice);
 
 #if RESHADE_ADDON >= 2
 		if (reshade::has_addon_event<reshade::addon_event::map_texture_region>())
-			reshade::hooks::install("ID3D10Texture1D::Map", reshade::hooks::vtable_from_instance(resource), 10, reinterpret_cast<reshade::hook::address>(&ID3D10Texture1D_Map));
+			reshade::hooks::install("ID3D10Texture1D::Map", reshade::hooks::vtable_from_instance(resource), 10, &ID3D10Texture1D_Map);
 		if (reshade::has_addon_event<reshade::addon_event::unmap_texture_region>())
-			reshade::hooks::install("ID3D10Texture1D::Unmap", reshade::hooks::vtable_from_instance(resource), 11, reinterpret_cast<reshade::hook::address>(&ID3D10Texture1D_Unmap));
+			reshade::hooks::install("ID3D10Texture1D::Unmap", reshade::hooks::vtable_from_instance(resource), 11, &ID3D10Texture1D_Unmap);
 #endif
 
 #if RESHADE_ADDON
@@ -906,7 +894,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture1D(const D3D10_TEXTURE1D_DES
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateTexture1D" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateTexture1D failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -944,13 +932,13 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture2D(const D3D10_TEXTURE2D_DES
 	{
 		ID3D10Texture2D *const resource = *ppTexture2D;
 
-		reshade::hooks::install("ID3D10Texture2D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D10Resource_GetDevice));
+		reshade::hooks::install("ID3D10Texture2D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D10Resource_GetDevice);
 
 #if RESHADE_ADDON >= 2
 		if (reshade::has_addon_event<reshade::addon_event::map_texture_region>())
-			reshade::hooks::install("ID3D10Texture2D::Map", reshade::hooks::vtable_from_instance(resource), 10, reinterpret_cast<reshade::hook::address>(&ID3D10Texture2D_Map));
+			reshade::hooks::install("ID3D10Texture2D::Map", reshade::hooks::vtable_from_instance(resource), 10, &ID3D10Texture2D_Map);
 		if (reshade::has_addon_event<reshade::addon_event::unmap_texture_region>())
-			reshade::hooks::install("ID3D10Texture2D::Unmap", reshade::hooks::vtable_from_instance(resource), 11, reinterpret_cast<reshade::hook::address>(&ID3D10Texture2D_Unmap));
+			reshade::hooks::install("ID3D10Texture2D::Unmap", reshade::hooks::vtable_from_instance(resource), 11, &ID3D10Texture2D_Unmap);
 #endif
 
 #if RESHADE_ADDON
@@ -967,7 +955,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture2D(const D3D10_TEXTURE2D_DES
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateTexture2D" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateTexture2D failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1005,13 +993,13 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture3D(const D3D10_TEXTURE3D_DES
 	{
 		ID3D10Texture3D *const resource = *ppTexture3D;
 
-		reshade::hooks::install("ID3D10Texture3D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D10Resource_GetDevice));
+		reshade::hooks::install("ID3D10Texture3D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D10Resource_GetDevice);
 
 #if RESHADE_ADDON >= 2
 		if (reshade::has_addon_event<reshade::addon_event::map_texture_region>())
-			reshade::hooks::install("ID3D10Texture3D::Map", reshade::hooks::vtable_from_instance(resource), 10, reinterpret_cast<reshade::hook::address>(&ID3D10Texture3D_Map));
+			reshade::hooks::install("ID3D10Texture3D::Map", reshade::hooks::vtable_from_instance(resource), 10, &ID3D10Texture3D_Map);
 		if (reshade::has_addon_event<reshade::addon_event::unmap_texture_region>())
-			reshade::hooks::install("ID3D10Texture3D::Unmap", reshade::hooks::vtable_from_instance(resource), 11, reinterpret_cast<reshade::hook::address>(&ID3D10Texture3D_Unmap));
+			reshade::hooks::install("ID3D10Texture3D::Unmap", reshade::hooks::vtable_from_instance(resource), 11, &ID3D10Texture3D_Unmap);
 #endif
 
 #if RESHADE_ADDON
@@ -1028,7 +1016,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture3D(const D3D10_TEXTURE3D_DES
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateTexture3D" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateTexture3D failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1071,7 +1059,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateShaderResourceView(ID3D10Resource *
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateShaderResourceView" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateShaderResourceView failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1114,7 +1102,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRenderTargetView(ID3D10Resource *pR
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateRenderTargetView" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateRenderTargetView failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1157,7 +1145,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilView(ID3D10Resource *pR
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateDepthStencilView" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateDepthStencilView failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1169,23 +1157,28 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateInputLayout(const D3D10_INPUT_ELEME
 	if (ppInputLayout == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateInputLayout(pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout);
 
-	std::vector<D3D10_INPUT_ELEMENT_DESC> internal_elements;
-	auto elements = reshade::d3d10::convert_input_layout_desc(NumElements, pInputElementDescs);
+	std::vector<D3D10_INPUT_ELEMENT_DESC> internal_desc; std::vector<reshade::api::input_element> desc;
+	desc.reserve(NumElements);
+	for (UINT i = 0; i < NumElements; ++i)
+		desc.push_back(reshade::d3d10::convert_input_element(pInputElementDescs[i]));
 
 	reshade::api::shader_desc signature_desc = {};
 	signature_desc.code = pShaderBytecodeWithInputSignature;
 	signature_desc.code_size = BytecodeLength;
 
 	const reshade::api::pipeline_subobject subobjects[] = {
-		{ reshade::api::pipeline_subobject_type::input_layout, static_cast<uint32_t>(elements.size()), elements.data() },
+		{ reshade::api::pipeline_subobject_type::input_layout, static_cast<uint32_t>(desc.size()), desc.data() },
 		{ reshade::api::pipeline_subobject_type::vertex_shader, 1, &signature_desc }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
-		reshade::d3d10::convert_input_layout_desc(static_cast<uint32_t>(elements.size()), elements.data(), internal_elements);
-		pInputElementDescs = internal_elements.data();
-		NumElements = static_cast<UINT>(internal_elements.size());
+		internal_desc.reserve(desc.size());
+		for (size_t i = 0; i < desc.size(); ++i)
+			reshade::d3d10::convert_input_element(desc[i], internal_desc.emplace_back());
+
+		pInputElementDescs = internal_desc.data();
+		NumElements = static_cast<UINT>(internal_desc.size());
 		pShaderBytecodeWithInputSignature = signature_desc.code;
 		BytecodeLength = signature_desc.code_size;
 	}
@@ -1197,7 +1190,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateInputLayout(const D3D10_INPUT_ELEME
 #if RESHADE_ADDON
 		ID3D10InputLayout *const pipeline = *ppInputLayout;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
 		{
@@ -1210,7 +1203,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateInputLayout(const D3D10_INPUT_ELEME
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateInputLayout" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateInputLayout failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1230,7 +1223,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateVertexShader(const void *pShaderByt
 		{ reshade::api::pipeline_subobject_type::vertex_shader, 1, &desc }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		pShaderBytecode = desc.code;
 		BytecodeLength = desc.code_size;
@@ -1243,7 +1236,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateVertexShader(const void *pShaderByt
 #if RESHADE_ADDON
 		ID3D10VertexShader *const pipeline = *ppVertexShader;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
 		{
@@ -1256,7 +1249,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateVertexShader(const void *pShaderByt
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateVertexShader" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateVertexShader failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1276,7 +1269,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateGeometryShader(const void *pShaderB
 		{ reshade::api::pipeline_subobject_type::geometry_shader, 1, &desc }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		pShaderBytecode = desc.code;
 		BytecodeLength = desc.code_size;
@@ -1289,7 +1282,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateGeometryShader(const void *pShaderB
 #if RESHADE_ADDON
 		ID3D10GeometryShader *const pipeline = *ppGeometryShader;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
 		{
@@ -1302,7 +1295,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateGeometryShader(const void *pShaderB
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateGeometryShader" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateGeometryShader failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1326,7 +1319,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateGeometryShaderWithStreamOutput(cons
 		{ reshade::api::pipeline_subobject_type::stream_output_state, 1, &stream_output_desc }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		pShaderBytecode = desc.code;
 		BytecodeLength = desc.code_size;
@@ -1340,7 +1333,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateGeometryShaderWithStreamOutput(cons
 #if RESHADE_ADDON
 		ID3D10GeometryShader *const pipeline = *ppGeometryShader;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
 		{
@@ -1353,7 +1346,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateGeometryShaderWithStreamOutput(cons
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateGeometryShaderWithStreamOutput" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateGeometryShaderWithStreamOutput failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1373,7 +1366,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreatePixelShader(const void *pShaderByte
 		{ reshade::api::pipeline_subobject_type::pixel_shader, 1, &desc }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		pShaderBytecode = desc.code;
 		BytecodeLength = desc.code_size;
@@ -1386,7 +1379,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreatePixelShader(const void *pShaderByte
 #if RESHADE_ADDON
 		ID3D10PixelShader *const pipeline = *ppPixelShader;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
 		{
@@ -1399,7 +1392,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreatePixelShader(const void *pShaderByte
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreatePixelShader" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreatePixelShader failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1411,6 +1404,28 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState(const D3D10_BLEND_DESC *
 	if (ppBlendState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateBlendState(pBlendStateDesc, ppBlendState);
 
+	// Default blend state (https://learn.microsoft.com/windows/win32/api/d3d10/ns-d3d10-d3d10_blend_desc)
+	static constexpr D3D10_BLEND_DESC default_blend_desc = {
+		/* AlphaToCoverageEnable = */
+		FALSE,
+		/* BlendEnable = */
+		{ FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE },
+		/* SrcBlend = */
+		D3D10_BLEND_ONE,
+		/* DestBlend = */
+		D3D10_BLEND_ZERO,
+		/* BlendOp = */
+		D3D10_BLEND_OP_ADD,
+		/* SrcBlendAlpha = */
+		D3D10_BLEND_ONE,
+		/* DestBlendAlpha = */
+		D3D10_BLEND_ZERO,
+		/* BlendOpAlpha = */
+		D3D10_BLEND_OP_ADD,
+		/* RenderTargetWriteMask =*/
+		{ D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL, D3D10_COLOR_WRITE_ENABLE_ALL }
+	};
+
 	D3D10_BLEND_DESC internal_desc = {};
 	auto desc = reshade::d3d10::convert_blend_desc(pBlendStateDesc);
 	reshade::api::dynamic_state dynamic_states[2] = { reshade::api::dynamic_state::blend_constant, reshade::api::dynamic_state::sample_mask };
@@ -1420,7 +1435,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState(const D3D10_BLEND_DESC *
 		{ reshade::api::pipeline_subobject_type::dynamic_pipeline_states, static_cast<uint32_t>(std::size(dynamic_states)), dynamic_states }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		reshade::d3d10::convert_blend_desc(desc, internal_desc);
 		pBlendStateDesc = &internal_desc;
@@ -1433,9 +1448,11 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState(const D3D10_BLEND_DESC *
 #if RESHADE_ADDON
 		ID3D10BlendState *const pipeline = *ppBlendState;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pBlendStateDesc, &default_blend_desc, sizeof(D3D10_BLEND_DESC)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1446,7 +1463,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState(const D3D10_BLEND_DESC *
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateBlendState" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateBlendState failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1458,6 +1475,26 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilState(const D3D10_DEPTH
 	if (ppDepthStencilState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateDepthStencilState(pDepthStencilDesc, ppDepthStencilState);
 
+	// Default depth-stencil state (https://learn.microsoft.com/windows/win32/api/d3d10/ns-d3d10-d3d10_depth_stencil_desc)
+	static constexpr D3D10_DEPTH_STENCIL_DESC default_depth_stencil_desc = {
+		/* DepthEnable = */
+		TRUE,
+		/* DepthWriteMask = */
+		D3D10_DEPTH_WRITE_MASK_ALL,
+		/* DepthFunc = */
+		D3D10_COMPARISON_LESS,
+		/* StencilEnable = */
+		FALSE,
+		/* StencilReadMask = */
+		D3D10_DEFAULT_STENCIL_READ_MASK,
+		/* StencilWriteMask = */
+		D3D10_DEFAULT_STENCIL_WRITE_MASK,
+		/* FrontFace = */
+		{ D3D10_STENCIL_OP_KEEP, D3D10_STENCIL_OP_KEEP, D3D10_STENCIL_OP_KEEP, D3D10_COMPARISON_ALWAYS },
+		/* BackFace = */
+		{ D3D10_STENCIL_OP_KEEP, D3D10_STENCIL_OP_KEEP, D3D10_STENCIL_OP_KEEP, D3D10_COMPARISON_ALWAYS }
+	};
+
 	D3D10_DEPTH_STENCIL_DESC internal_desc = {};
 	auto desc = reshade::d3d10::convert_depth_stencil_desc(pDepthStencilDesc);
 	reshade::api::dynamic_state dynamic_states[2] = { reshade::api::dynamic_state::front_stencil_reference_value, reshade::api::dynamic_state::back_stencil_reference_value };
@@ -1467,7 +1504,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilState(const D3D10_DEPTH
 		{ reshade::api::pipeline_subobject_type::dynamic_pipeline_states, static_cast<uint32_t>(std::size(dynamic_states)), dynamic_states }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		reshade::d3d10::convert_depth_stencil_desc(desc, internal_desc);
 		pDepthStencilDesc = &internal_desc;
@@ -1480,9 +1517,11 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilState(const D3D10_DEPTH
 #if RESHADE_ADDON
 		ID3D10DepthStencilState *const pipeline = *ppDepthStencilState;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pDepthStencilDesc, &default_depth_stencil_desc, sizeof(D3D10_DEPTH_STENCIL_DESC)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1493,7 +1532,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilState(const D3D10_DEPTH
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateDepthStencilState" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateDepthStencilState failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1505,6 +1544,30 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRasterizerState(const D3D10_RASTERI
 	if (ppRasterizerState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateRasterizerState(pRasterizerDesc, ppRasterizerState);
 
+	// Default rasterizer state (https://learn.microsoft.com/windows/win32/api/d3d10/ns-d3d10-d3d10_rasterizer_desc)
+	static constexpr D3D10_RASTERIZER_DESC default_rasterizer_desc = {
+		/* FillMode = */
+		D3D10_FILL_SOLID,
+		/* CullMode = */
+		D3D10_CULL_BACK,
+		/* FrontCounterClockwise = */
+		FALSE,
+		/* DepthBias = */
+		0,
+		/* SlopeScaledDepthBias = */
+		0.0f,
+		/* DepthBiasClamp = */
+		0.0f,
+		/* DepthClipEnable = */
+		TRUE,
+		/* ScissorEnable = */
+		FALSE,
+		/* MultisampleEnable = */
+		FALSE,
+		/* AntialiasedLineEnable = */
+		FALSE
+	};
+
 	D3D10_RASTERIZER_DESC internal_desc = {};
 	auto desc = reshade::d3d10::convert_rasterizer_desc(pRasterizerDesc);
 
@@ -1512,7 +1575,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRasterizerState(const D3D10_RASTERI
 		{ reshade::api::pipeline_subobject_type::rasterizer_state, 1, &desc }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		reshade::d3d10::convert_rasterizer_desc(desc, internal_desc);
 		pRasterizerDesc = &internal_desc;
@@ -1525,9 +1588,11 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRasterizerState(const D3D10_RASTERI
 #if RESHADE_ADDON
 		ID3D10RasterizerState *const pipeline = *ppRasterizerState;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default rasterizer state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pRasterizerDesc, &default_rasterizer_desc, sizeof(D3D10_RASTERIZER_DESC)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1538,7 +1603,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRasterizerState(const D3D10_RASTERI
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateRasterizerState" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateRasterizerState failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1581,7 +1646,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateSamplerState(const D3D10_SAMPLER_DE
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::CreateSamplerState" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::CreateSamplerState failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1624,9 +1689,9 @@ HRESULT STDMETHODCALLTYPE D3D10Device::OpenSharedResource(HANDLE hResource, REFI
 	const HRESULT hr = _orig->OpenSharedResource(hResource, ReturnedInterface, ppResource);
 	if (SUCCEEDED(hr))
 	{
+#if RESHADE_ADDON
 		assert(ppResource != nullptr);
 
-#if RESHADE_ADDON
 		// The returned interface IID may be 'IDXGIResource', which is a different pointer than 'ID3D10Resource', so need to query it first
 		ID3D10Resource *resource = nullptr;
 		reshade::api::resource_desc desc;
@@ -1685,7 +1750,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::OpenSharedResource(HANDLE hResource, REFI
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device::OpenSharedResource" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device::OpenSharedResource failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1737,7 +1802,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateShaderResourceView1(ID3D10Resource 
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device1::CreateShaderResourceView1" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device1::CreateShaderResourceView1 failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1749,6 +1814,16 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState1(const D3D10_BLEND_DESC1
 	if (ppBlendState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateBlendState1(pBlendStateDesc, ppBlendState);
 
+	// Default blend state (https://learn.microsoft.com/windows/win32/api/d3d10_1/ns-d3d10_1-d3d10_blend_desc1)
+	static constexpr D3D10_BLEND_DESC1 default_blend_desc = {
+		/* AlphaToCoverageEnable = */
+		FALSE,
+		/* IndependentBlendEnable = */
+		FALSE,
+		/* RenderTarget[0] = */
+		{ { FALSE, D3D10_BLEND_ONE, D3D10_BLEND_ZERO, D3D10_BLEND_OP_ADD, D3D10_BLEND_ONE, D3D10_BLEND_ZERO, D3D10_BLEND_OP_ADD, D3D10_COLOR_WRITE_ENABLE_ALL } }
+	};
+
 	D3D10_BLEND_DESC1 internal_desc = {};
 	auto desc = reshade::d3d10::convert_blend_desc(pBlendStateDesc);
 	reshade::api::dynamic_state dynamic_states[2] = { reshade::api::dynamic_state::blend_constant, reshade::api::dynamic_state::sample_mask };
@@ -1758,7 +1833,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState1(const D3D10_BLEND_DESC1
 		{ reshade::api::pipeline_subobject_type::dynamic_pipeline_states, static_cast<uint32_t>(std::size(dynamic_states)), dynamic_states }
 	};
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects))
 	{
 		reshade::d3d10::convert_blend_desc(desc, internal_desc);
 		pBlendStateDesc = &internal_desc;
@@ -1771,9 +1846,11 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState1(const D3D10_BLEND_DESC1
 #if RESHADE_ADDON
 		ID3D10BlendState1 *const pipeline = *ppBlendState;
 
-		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, reshade::d3d10::global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
+		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pBlendStateDesc, &default_blend_desc, sizeof(D3D10_BLEND_DESC1)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1784,7 +1861,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState1(const D3D10_BLEND_DESC1
 #if RESHADE_VERBOSE_LOG
 	else
 	{
-		LOG(WARN) << "ID3D10Device1::CreateBlendState1" << " failed with error code " << hr << '.';
+		reshade::log::message(reshade::log::level::warning, "ID3D10Device1::CreateBlendState1 failed with error code %s.", reshade::log::hr_to_string(hr).c_str());
 	}
 #endif
 
@@ -1794,3 +1871,70 @@ D3D10_FEATURE_LEVEL1 STDMETHODCALLTYPE D3D10Device::GetFeatureLevel()
 {
 	return _orig->GetFeatureLevel();
 }
+
+#if RESHADE_ADDON >= 2
+void D3D10Device::invoke_bind_samplers_event(reshade::api::shader_stage stage, UINT first, UINT count, ID3D10SamplerState *const *objects)
+{
+	assert(objects != nullptr || count == 0);
+
+	if (!reshade::has_addon_event<reshade::addon_event::push_descriptors>())
+		return;
+
+#ifndef _WIN64
+	temp_mem<reshade::api::sampler, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT> descriptors_mem(count);
+	for (UINT i = 0; i < count; ++i)
+		descriptors_mem[i] = to_handle(objects[i]);
+	const auto descriptors = descriptors_mem.p;
+#else
+	static_assert(sizeof(*objects) == sizeof(reshade::api::sampler));
+	const auto descriptors = reinterpret_cast<const reshade::api::sampler *>(objects);
+#endif
+
+	reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
+		this,
+		stage,
+		_global_pipeline_layout, 0,
+		reshade::api::descriptor_table_update { {}, first, 0, count, reshade::api::descriptor_type::sampler, descriptors });
+}
+void D3D10Device::invoke_bind_shader_resource_views_event(reshade::api::shader_stage stage, UINT first, UINT count, ID3D10ShaderResourceView *const *objects)
+{
+	assert(objects != nullptr || count == 0);
+
+	if (!reshade::has_addon_event<reshade::addon_event::push_descriptors>())
+		return;
+
+#ifndef _WIN64
+	temp_mem<reshade::api::resource_view, D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> descriptors_mem(count);
+	for (UINT i = 0; i < count; ++i)
+		descriptors_mem[i] = to_handle(objects[i]);
+	const auto descriptors = descriptors_mem.p;
+#else
+	static_assert(sizeof(*objects) == sizeof(reshade::api::resource_view));
+	const auto descriptors = reinterpret_cast<const reshade::api::resource_view *>(objects);
+#endif
+
+	reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
+		this,
+		stage,
+		_global_pipeline_layout, 1,
+		reshade::api::descriptor_table_update { {}, first, 0, count, reshade::api::descriptor_type::shader_resource_view, descriptors });
+}
+void D3D10Device::invoke_bind_constant_buffers_event(reshade::api::shader_stage stage, UINT first, UINT count, ID3D10Buffer *const *objects)
+{
+	assert(objects != nullptr || count == 0);
+
+	if (!reshade::has_addon_event<reshade::addon_event::push_descriptors>())
+		return;
+
+	temp_mem<reshade::api::buffer_range, D3D10_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> descriptors_mem(count);
+	for (UINT i = 0; i < count; ++i)
+		descriptors_mem[i] = { to_handle(objects[i]), 0, UINT64_MAX };
+	const auto descriptors = descriptors_mem.p;
+
+	reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
+		this,
+		stage,
+		_global_pipeline_layout, 2,
+		reshade::api::descriptor_table_update { {}, first, 0, count, reshade::api::descriptor_type::constant_buffer, descriptors });
+}
+#endif

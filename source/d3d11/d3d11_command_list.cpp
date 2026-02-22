@@ -6,12 +6,24 @@
 #include "d3d11_device.hpp"
 #include "d3d11_command_list.hpp"
 #include "dll_log.hpp"
+#include "com_utils.hpp"
+#include "addon_manager.hpp"
 
 D3D11CommandList::D3D11CommandList(D3D11Device *device, ID3D11CommandList *original) :
 	command_list_impl(device, original),
 	_device(device)
 {
 	assert(_orig != nullptr && _device != nullptr);
+
+#if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::init_command_list>(this);
+#endif
+}
+D3D11CommandList::~D3D11CommandList()
+{
+#if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::destroy_command_list>(this);
+#endif
 }
 
 bool D3D11CommandList::check_and_upgrade_interface(REFIID riid)
@@ -37,6 +49,14 @@ HRESULT STDMETHODCALLTYPE D3D11CommandList::QueryInterface(REFIID riid, void **p
 		return S_OK;
 	}
 
+	// Interface ID to query the original object from a proxy object
+	if (riid == IID_UnwrappedObject)
+	{
+		_orig->AddRef();
+		*ppvObj = _orig;
+		return S_OK;
+	}
+
 	return _orig->QueryInterface(riid, ppvObj);
 }
 ULONG   STDMETHODCALLTYPE D3D11CommandList::AddRef()
@@ -55,13 +75,13 @@ ULONG   STDMETHODCALLTYPE D3D11CommandList::Release()
 
 	const auto orig = _orig;
 #if 0
-	LOG(DEBUG) << "Destroying " << "ID3D11CommandList" << " object " << this << " (" << orig << ").";
+	reshade::log::message(reshade::log::level::debug, "Destroying ID3D11CommandList object %p (%p).", this, orig);
 #endif
 	delete this;
 
 	const ULONG ref_orig = orig->Release();
 	if (ref_orig != 0) // Verify internal reference count
-		LOG(WARN) << "Reference count for " << "ID3D11CommandList" << " object " << this << " (" << orig << ") is inconsistent (" << ref_orig << ").";
+		reshade::log::message(reshade::log::level::warning, "Reference count for ID3D11CommandList object %p (%p) is inconsistent (%lu).", this, orig, ref_orig);
 	return 0;
 }
 

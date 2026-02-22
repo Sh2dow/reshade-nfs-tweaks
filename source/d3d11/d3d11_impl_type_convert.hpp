@@ -5,10 +5,11 @@
 
 #pragma once
 
+#include <d3d11_4.h>
 #include "com_ptr.hpp"
 #include "reshade_api_pipeline.hpp"
 #include <vector>
-#include <d3d11_4.h>
+#include <limits>
 
 namespace reshade::d3d11
 {
@@ -56,11 +57,16 @@ namespace reshade::d3d11
 		std::vector<com_ptr<ID3D11Query>> queries;
 	};
 
-	constexpr api::pipeline_layout global_pipeline_layout = { 0xFFFFFFFFFFFFFFFF };
+	struct fence_impl
+	{
+		uint64_t current_value;
+		com_ptr<ID3D11Query> event_queries[8];
+	};
 
 	auto convert_format(api::format format) -> DXGI_FORMAT;
 	auto convert_format(DXGI_FORMAT format) -> api::format;
 
+	auto convert_color_space(api::color_space type) -> DXGI_COLOR_SPACE_TYPE;
 	auto convert_color_space(DXGI_COLOR_SPACE_TYPE type) -> api::color_space;
 
 	auto convert_access_flags(api::map_access access) -> D3D11_MAP;
@@ -97,8 +103,8 @@ namespace reshade::d3d11
 	api::resource_view_desc convert_resource_view_desc(const D3D11_UNORDERED_ACCESS_VIEW_DESC &internal_desc);
 	api::resource_view_desc convert_resource_view_desc(const D3D11_UNORDERED_ACCESS_VIEW_DESC1 &internal_desc);
 
-	void convert_input_layout_desc(uint32_t count, const api::input_element *elements, std::vector<D3D11_INPUT_ELEMENT_DESC> &internal_elements);
-	std::vector<api::input_element> convert_input_layout_desc(UINT count, const D3D11_INPUT_ELEMENT_DESC *internal_elements);
+	void convert_input_element(const api::input_element &desc, D3D11_INPUT_ELEMENT_DESC &internal_desc);
+	api::input_element convert_input_element(const D3D11_INPUT_ELEMENT_DESC &internal_desc);
 
 	void convert_blend_desc(const api::blend_desc &desc, D3D11_BLEND_DESC &internal_desc);
 	void convert_blend_desc(const api::blend_desc &desc, D3D11_BLEND_DESC1 &internal_desc);
@@ -130,6 +136,7 @@ namespace reshade::d3d11
 	auto convert_primitive_topology(api::primitive_topology value)-> D3D11_PRIMITIVE_TOPOLOGY;
 	auto convert_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY value)-> api::primitive_topology;
 	auto convert_query_type(api::query_type value) -> D3D11_QUERY;
+	auto convert_fence_flags(api::fence_flags value) -> D3D11_FENCE_FLAG;
 
 	inline auto to_handle(ID3D11SamplerState *ptr) { return api::sampler { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(ID3D11Resource *ptr) { return api::resource { reinterpret_cast<uintptr_t>(ptr) }; }
@@ -144,4 +151,6 @@ namespace reshade::d3d11
 	inline auto to_handle(ID3D11BlendState *ptr) { return api::pipeline { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(ID3D11RasterizerState *ptr) { return api::pipeline { reinterpret_cast<uintptr_t>(ptr) }; }
 	inline auto to_handle(ID3D11DepthStencilState *ptr) { return api::pipeline { reinterpret_cast<uintptr_t>(ptr) }; }
+	inline auto to_handle(ID3D11Fence *ptr) { return api::fence { reinterpret_cast<uintptr_t>(ptr) }; }
+	inline auto to_handle(IDXGIKeyedMutex *ptr) { return api::fence { reinterpret_cast<uintptr_t>(ptr) }; }
 }

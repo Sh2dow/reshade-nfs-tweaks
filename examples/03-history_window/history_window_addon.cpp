@@ -6,9 +6,9 @@
 
 #include <imgui.h>
 #include <reshade.hpp>
+#include <list>
 #include <vector>
 #include <string>
-#include <list>
 #include <algorithm>
 
 constexpr size_t HISTORY_LIMIT = 1000;
@@ -57,9 +57,9 @@ static void on_destroy(reshade::api::effect_runtime *runtime)
 	runtime->destroy_private_data<history_context>();
 }
 
-static bool on_set_uniform_value(reshade::api::effect_runtime *runtime, reshade::api::effect_uniform_variable variable, const void *value, size_t size)
+static bool on_set_uniform_value(reshade::api::effect_runtime *runtime, reshade::api::effect_uniform_variable variable, const void *new_value, size_t new_value_size)
 {
-	history_context &ctx = runtime->get_private_data<history_context>();
+	history_context &ctx = *runtime->get_private_data<history_context>();
 
 	char ui_type[16];
 	if (!runtime->get_annotation_string_from_uniform_variable(variable, "ui_type", ui_type))
@@ -86,7 +86,7 @@ static bool on_set_uniform_value(reshade::api::effect_runtime *runtime, reshade:
 		break;
 	}
 
-	std::memcpy(after.as_uint, value, std::min(size, size_t(4 * 16)));
+	std::memcpy(after.as_uint, new_value, std::min(new_value_size, sizeof(after)));
 
 	if (std::memcmp(&before, &after, sizeof(after)) != 0)
 	{
@@ -103,7 +103,9 @@ static bool on_set_uniform_value(reshade::api::effect_runtime *runtime, reshade:
 			--ctx.history_pos;
 		}
 
-		if (auto front = ctx.histories.begin(); front != ctx.histories.end() && front->variable_handle.handle == variable.handle)
+		if (const auto front = ctx.histories.begin();
+			front != ctx.histories.end() &&
+			front->variable_handle.handle == variable.handle)
 		{
 			std::memcpy(&history.before, &front->before, sizeof(history.before));
 			ctx.histories.pop_front();
@@ -125,7 +127,7 @@ static bool on_set_technique_state(reshade::api::effect_runtime *runtime, reshad
 		runtime->get_annotation_int_from_technique(technique, "timeout", nullptr, 0))
 		return false;
 
-	history_context &ctx = runtime->get_private_data<history_context>();
+	history_context &ctx = *runtime->get_private_data<history_context>();
 
 	char technique_name[128] = "";
 	runtime->get_technique_name(technique, technique_name);
@@ -161,7 +163,7 @@ static bool on_set_technique_state(reshade::api::effect_runtime *runtime, reshad
 
 static void on_set_current_preset_path(reshade::api::effect_runtime *runtime, const char *)
 {
-	history_context &ctx = runtime->get_private_data<history_context>();
+	history_context &ctx = *runtime->get_private_data<history_context>();
 
 	ctx.histories.clear();
 	ctx.history_pos = 0;
@@ -173,7 +175,7 @@ static void draw_history_window(reshade::api::effect_runtime *runtime)
 	size_t current_pos = std::numeric_limits<size_t>::max();
 	size_t selected_pos = std::numeric_limits<size_t>::max();
 
-	history_context &ctx = runtime->get_private_data<history_context>();
+	history_context &ctx = *runtime->get_private_data<history_context>();
 
 	if (ImGui::Selectable("End of Undo", ctx.history_pos == ctx.histories.size()))
 		selected_pos = ctx.histories.size();

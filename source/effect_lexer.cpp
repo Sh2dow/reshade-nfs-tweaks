@@ -18,7 +18,7 @@ enum token_type
 };
 
 // Lookup table which translates a given char to a token type
-static const unsigned type_lookup[256] = {
+static const unsigned int s_type_lookup[256] = {
 	 0xFF,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00, SPACE,
 	 '\n', SPACE, SPACE, SPACE,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,
 	 0x00,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,  0x00,
@@ -35,7 +35,7 @@ static const unsigned type_lookup[256] = {
 };
 
 // Lookup tables which translate a given string literal to a token and backwards
-static const std::unordered_map<tokenid, std::string_view> token_lookup = {
+static const std::unordered_map<tokenid, std::string_view> s_token_lookup = {
 	{ tokenid::end_of_file, "end of file" },
 	{ tokenid::exclaim, "!" },
 	{ tokenid::hash, "#" },
@@ -88,6 +88,7 @@ static const std::unordered_map<tokenid, std::string_view> token_lookup = {
 	{ tokenid::caret_equal, "^=" },
 	{ tokenid::pipe_equal, "|=" },
 	{ tokenid::pipe_pipe, "||" },
+	{ tokenid::pragma, "_Pragma" },
 	{ tokenid::identifier, "identifier" },
 	{ tokenid::reserved, "reserved word" },
 	{ tokenid::true_literal, "true" },
@@ -158,6 +159,15 @@ static const std::unordered_map<tokenid, std::string_view> token_lookup = {
 	{ tokenid::min16int2, "min16int2" },
 	{ tokenid::min16int3, "min16int3" },
 	{ tokenid::min16int4, "min16int4" },
+	{ tokenid::min16int2x2, "min16int2x2" },
+	{ tokenid::min16int2x3, "min16int2x3" },
+	{ tokenid::min16int2x4, "min16int2x4" },
+	{ tokenid::min16int3x2, "min16int3x2" },
+	{ tokenid::min16int3x3, "min16int3x3" },
+	{ tokenid::min16int3x4, "min16int3x4" },
+	{ tokenid::min16int4x2, "min16int4x2" },
+	{ tokenid::min16int4x3, "min16int4x3" },
+	{ tokenid::min16int4x4, "min16int4x4" },
 	{ tokenid::uint_, "uint" },
 	{ tokenid::uint2, "uint2" },
 	{ tokenid::uint3, "uint3" },
@@ -175,6 +185,15 @@ static const std::unordered_map<tokenid, std::string_view> token_lookup = {
 	{ tokenid::min16uint2, "min16uint2" },
 	{ tokenid::min16uint3, "min16uint3" },
 	{ tokenid::min16uint4, "min16uint4" },
+	{ tokenid::min16uint2x2, "min16uint2x2" },
+	{ tokenid::min16uint2x3, "min16uint2x3" },
+	{ tokenid::min16uint2x4, "min16uint2x4" },
+	{ tokenid::min16uint3x2, "min16uint3x2" },
+	{ tokenid::min16uint3x3, "min16uint3x3" },
+	{ tokenid::min16uint3x4, "min16uint3x4" },
+	{ tokenid::min16uint4x2, "min16uint4x2" },
+	{ tokenid::min16uint4x3, "min16uint4x3" },
+	{ tokenid::min16uint4x4, "min16uint4x4" },
 	{ tokenid::float_, "float" },
 	{ tokenid::float2, "float2" },
 	{ tokenid::float3, "float3" },
@@ -192,6 +211,15 @@ static const std::unordered_map<tokenid, std::string_view> token_lookup = {
 	{ tokenid::min16float2, "min16float2" },
 	{ tokenid::min16float3, "min16float3" },
 	{ tokenid::min16float4, "min16float4" },
+	{ tokenid::min16float2x2, "min16float2x2" },
+	{ tokenid::min16float2x3, "min16float2x3" },
+	{ tokenid::min16float2x4, "min16float2x4" },
+	{ tokenid::min16float3x2, "min16float3x2" },
+	{ tokenid::min16float3x3, "min16float3x3" },
+	{ tokenid::min16float3x4, "min16float3x4" },
+	{ tokenid::min16float4x2, "min16float4x2" },
+	{ tokenid::min16float4x3, "min16float4x3" },
+	{ tokenid::min16float4x4, "min16float4x4" },
 	{ tokenid::vector, "vector" },
 	{ tokenid::matrix, "matrix" },
 	{ tokenid::string_, "string" },
@@ -205,7 +233,8 @@ static const std::unordered_map<tokenid, std::string_view> token_lookup = {
 	{ tokenid::storage2d, "storage2D" },
 	{ tokenid::storage3d, "storage3D" },
 };
-static const std::unordered_map<std::string_view, tokenid> keyword_lookup = {
+static const std::unordered_map<std::string_view, tokenid> s_keyword_lookup = {
+	{ "_Pragma", tokenid::pragma },
 	{ "asm", tokenid::reserved },
 	{ "asm_fragment", tokenid::reserved },
 	{ "auto", tokenid::reserved },
@@ -332,14 +361,41 @@ static const std::unordered_map<std::string_view, tokenid> keyword_lookup = {
 	{ "min16float2", tokenid::min16float2 },
 	{ "min16float3", tokenid::min16float3 },
 	{ "min16float4", tokenid::min16float4 },
+	{ "min16float2x2", tokenid::min16float2x2 },
+	{ "min16float2x3", tokenid::min16float2x3 },
+	{ "min16float2x4", tokenid::min16float2x4 },
+	{ "min16float3x2", tokenid::min16float3x2 },
+	{ "min16float3x3", tokenid::min16float3x3 },
+	{ "min16float3x4", tokenid::min16float3x4 },
+	{ "min16float4x2", tokenid::min16float4x2 },
+	{ "min16float4x3", tokenid::min16float4x3 },
+	{ "min16float4x4", tokenid::min16float4x4 },
 	{ "min16int", tokenid::min16int },
 	{ "min16int2", tokenid::min16int2 },
 	{ "min16int3", tokenid::min16int3 },
 	{ "min16int4", tokenid::min16int4 },
+	{ "min16int2x2", tokenid::min16int2x2 },
+	{ "min16int2x3", tokenid::min16int2x3 },
+	{ "min16int2x4", tokenid::min16int2x4 },
+	{ "min16int3x2", tokenid::min16int3x2 },
+	{ "min16int3x3", tokenid::min16int3x3 },
+	{ "min16int3x4", tokenid::min16int3x4 },
+	{ "min16int4x2", tokenid::min16int4x2 },
+	{ "min16int4x3", tokenid::min16int4x3 },
+	{ "min16int4x4", tokenid::min16int4x4 },
 	{ "min16uint", tokenid::min16uint },
 	{ "min16uint2", tokenid::min16uint2 },
 	{ "min16uint3", tokenid::min16uint3 },
 	{ "min16uint4", tokenid::min16uint4 },
+	{ "min16uint2x2", tokenid::min16uint2x2 },
+	{ "min16uint2x3", tokenid::min16uint2x3 },
+	{ "min16uint2x4", tokenid::min16uint2x4 },
+	{ "min16uint3x2", tokenid::min16uint3x2 },
+	{ "min16uint3x3", tokenid::min16uint3x3 },
+	{ "min16uint3x4", tokenid::min16uint3x4 },
+	{ "min16uint4x2", tokenid::min16uint4x2 },
+	{ "min16uint4x3", tokenid::min16uint4x3 },
+	{ "min16uint4x4", tokenid::min16uint4x4 },
 	{ "mutable", tokenid::reserved },
 	{ "namespace", tokenid::namespace_ },
 	{ "new", tokenid::reserved },
@@ -439,7 +495,7 @@ static const std::unordered_map<std::string_view, tokenid> keyword_lookup = {
 	{ "volatile", tokenid::volatile_ },
 	{ "while", tokenid::while_ }
 };
-static const std::unordered_map<std::string_view, tokenid> pp_directive_lookup = {
+static const std::unordered_map<std::string_view, tokenid> s_pp_directive_lookup = {
 	{ "define", tokenid::hash_def },
 	{ "undef", tokenid::hash_undef },
 	{ "if", tokenid::hash_if },
@@ -454,15 +510,15 @@ static const std::unordered_map<std::string_view, tokenid> pp_directive_lookup =
 	{ "include", tokenid::hash_include },
 };
 
-static inline bool is_octal_digit(char c)
+static bool is_octal_digit(char c)
 {
 	return static_cast<unsigned>(c - '0') < 8;
 }
-static inline bool is_decimal_digit(char c)
+static bool is_decimal_digit(char c)
 {
 	return static_cast<unsigned>(c - '0') < 10;
 }
-static inline bool is_hexadecimal_digit(char c)
+static bool is_hexadecimal_digit(char c)
 {
 	return is_decimal_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
@@ -504,8 +560,8 @@ static long long octal_to_decimal(long long n)
 
 std::string reshadefx::token::id_to_name(tokenid id)
 {
-	const auto it = token_lookup.find(id);
-	if (it != token_lookup.end())
+	const auto it = s_token_lookup.find(id);
+	if (it != s_token_lookup.end())
 		return std::string(it->second);
 	return "unknown";
 }
@@ -526,7 +582,7 @@ next_token:
 	assert(_cur <= _end);
 
 	// Do a character type lookup for the current character
-	switch (type_lookup[uint8_t(*_cur)])
+	switch (s_type_lookup[uint8_t(*_cur)])
 	{
 	case 0xFF: // EOF
 		tok.id = tokenid::end_of_file;
@@ -635,7 +691,7 @@ next_token:
 			tok.id = tokenid::minus;
 		break;
 	case '.':
-		if (type_lookup[uint8_t(_cur[1])] == DIGIT)
+		if (s_type_lookup[uint8_t(_cur[1])] == DIGIT)
 			parse_numeric_literal(tok);
 		else if (_cur[1] == '.' && _cur[2] == '.')
 			tok.id = tokenid::ellipsis,
@@ -805,7 +861,7 @@ void reshadefx::lexer::skip_space()
 			continue;
 		}
 
-		if (type_lookup[uint8_t(*_cur)] == SPACE)
+		if (s_type_lookup[uint8_t(*_cur)] == SPACE)
 			skip(1);
 		else
 			break;
@@ -841,7 +897,7 @@ void reshadefx::lexer::parse_identifier(token &tok) const
 	auto *const begin = _cur, *end = begin;
 
 	// Skip to the end of the identifier sequence
-	while (type_lookup[uint8_t(*end)] == IDENT || type_lookup[uint8_t(*end)] == DIGIT)
+	while (s_type_lookup[uint8_t(*end)] == IDENT || s_type_lookup[uint8_t(*end)] == DIGIT)
 		end++;
 
 	tok.id = tokenid::identifier;
@@ -852,8 +908,8 @@ void reshadefx::lexer::parse_identifier(token &tok) const
 	if (_ignore_keywords)
 		return;
 
-	if (const auto it = keyword_lookup.find(tok.literal_as_string);
-		it != keyword_lookup.end())
+	if (const auto it = s_keyword_lookup.find(tok.literal_as_string);
+		it != s_keyword_lookup.end())
 		tok.id = it->second;
 }
 bool reshadefx::lexer::parse_pp_directive(token &tok)
@@ -862,8 +918,8 @@ bool reshadefx::lexer::parse_pp_directive(token &tok)
 	skip_space(); // Skip any space between the '#' and directive
 	parse_identifier(tok);
 
-	if (const auto it = pp_directive_lookup.find(tok.literal_as_string);
-		it != pp_directive_lookup.end())
+	if (const auto it = s_pp_directive_lookup.find(tok.literal_as_string);
+		it != s_pp_directive_lookup.end())
 	{
 		tok.id = it->second;
 		return true;
@@ -999,6 +1055,9 @@ void reshadefx::lexer::parse_string_literal(token &tok, bool escape)
 
 	tok.id = tokenid::string_literal;
 	tok.length = end - begin + 1;
+
+	// Free up unused memory
+	tok.literal_as_string.shrink_to_fit();
 }
 void reshadefx::lexer::parse_numeric_literal(token &tok) const
 {

@@ -8,6 +8,7 @@
 #include "d3d12_device.hpp"
 #include "d3d12_descriptor_heap.hpp"
 #include "dll_log.hpp"
+#include "com_utils.hpp"
 
 D3D12DescriptorHeap::D3D12DescriptorHeap(ID3D12Device *device, ID3D12DescriptorHeap *original) :
 	_orig(original),
@@ -41,6 +42,14 @@ HRESULT STDMETHODCALLTYPE D3D12DescriptorHeap::QueryInterface(REFIID riid, void 
 		return S_OK;
 	}
 
+	// Interface ID to query the original object from a proxy object
+	if (riid == IID_UnwrappedObject)
+	{
+		_orig->AddRef();
+		*ppvObj = _orig;
+		return S_OK;
+	}
+
 	return _orig->QueryInterface(riid, ppvObj);
 }
 ULONG   STDMETHODCALLTYPE D3D12DescriptorHeap::AddRef()
@@ -59,13 +68,13 @@ ULONG   STDMETHODCALLTYPE D3D12DescriptorHeap::Release()
 
 	const auto orig = _orig;
 #if 0
-	LOG(DEBUG) << "Destroying " << "ID3D12DescriptorHeap" << " object " << this << " (" << orig << ").";
+	reshade::log::message(reshade::log::level::debug, "Destroying ID3D12DescriptorHeap object %p (%p).", this, orig);
 #endif
 	delete this;
 
 	const ULONG ref_orig = orig->Release();
 	if (ref_orig != 0) // Verify internal reference count
-		LOG(WARN) << "Reference count for " << "ID3D12DescriptorHeap" << " object " << this << " (" << orig << ") is inconsistent (" << ref_orig << ").";
+		reshade::log::message(reshade::log::level::warning, "Reference count for ID3D12DescriptorHeap object %p (%p) is inconsistent (%lu).", this, orig, ref_orig);
 	return 0;
 }
 

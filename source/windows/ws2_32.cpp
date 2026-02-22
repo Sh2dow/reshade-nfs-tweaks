@@ -6,12 +6,29 @@
 #include "hook_manager.hpp"
 #include <Windows.h>
 #include <Winsock2.h>
-#include <ws2ipdef.h>
 
 #if RESHADE_ADDON == 1
+#include <ws2ipdef.h>
+
 // Do not count network traffic for local sockets (localhost), so to avoid blocking occuring in games running local servers in single player too
 static bool is_local_socket(SOCKET s)
 {
+	struct network_state_guard
+	{
+		int error;
+		int wsa_error;
+
+		network_state_guard() : error(errno), wsa_error(WSAGetLastError())
+		{
+		}
+
+		~network_state_guard()
+		{
+			errno = error;
+			WSASetLastError(wsa_error);
+		}
+	} error_guard;
+
 	// Get the target address information of the socket
 	int address_size = sizeof(SOCKADDR_STORAGE);
 	SOCKADDR_STORAGE peer_address = {};

@@ -28,6 +28,22 @@ EXPORTS
 	; d3d10.dll
 	D3D10CreateDevice @4 PRIVATE
 	D3D10CreateDeviceAndSwapChain @5 PRIVATE
+	D3D10CreateBlob PRIVATE
+	D3D10CreateEffectFromMemory PRIVATE
+	D3D10CreateEffectPoolFromMemory PRIVATE
+	D3D10CompileEffectFromMemory PRIVATE
+	D3D10CompileShader PRIVATE
+	D3D10DisassembleEffect
+	D3D10DisassembleShader PRIVATE
+	D3D10GetPixelShaderProfile PRIVATE
+	D3D10GetVertexShaderProfile PRIVATE
+	D3D10GetGeometryShaderProfile PRIVATE
+	D3D10ReflectShader PRIVATE
+	D3D10PreprocessShader PRIVATE
+	D3D10GetInputSignatureBlob PRIVATE
+	D3D10GetOutputSignatureBlob PRIVATE
+	D3D10GetInputAndOutputSignatureBlob PRIVATE
+	D3D10GetShaderDebugInfo PRIVATE
 
 	; d3d10_1.dll
 	D3D10CreateDevice1 PRIVATE
@@ -51,6 +67,10 @@ EXPORTS
 	D3D12PIXReportCounter PRIVATE
 	D3D12SerializeRootSignature PRIVATE
 	D3D12SerializeVersionedRootSignature PRIVATE
+
+	; ddraw.dll
+	DirectDrawCreate @8 PRIVATE
+	DirectDrawCreateEx @10 PRIVATE
 
 	; dxgi.dll
 	CreateDXGIFactory PRIVATE
@@ -433,10 +453,20 @@ EXPORTS
 	wglUseFontOutlinesA PRIVATE
 	wglUseFontOutlinesW PRIVATE
 
-	; vrclient[_x64].dll
-	VRClientCoreFactory PRIVATE
+	; openxr_loader.dll
+	xrNegotiateLoaderApiLayerInterface
+
+	; openvr_api.dll
+	VR_GetInitToken PRIVATE
+	VR_Init PRIVATE
+	VR_InitInternal PRIVATE
+	VR_InitInternal2 PRIVATE
+	VR_Shutdown PRIVATE
+	VR_ShutdownInternal PRIVATE
+	VR_GetGenericInterface PRIVATE
 
 	; vulkan-1.dll
+	vkNegotiateLoaderLayerInterfaceVersion
 	vkCreateDevice PRIVATE
 	vkCreateInstance PRIVATE
 	vkGetDeviceProcAddr PRIVATE
@@ -458,6 +488,13 @@ EXPORTS
 	ClipCursor = HookClipCursor PRIVATE
 	GetCursorPos = HookGetCursorPosition PRIVATE
 	SetCursorPos = HookSetCursorPosition PRIVATE
+	GetAsyncKeyState = HookGetAsyncKeyState PRIVATE
+	GetKeyState = HookGetKeyState PRIVATE
+	GetKeyboardState = HookGetKeyboardState PRIVATE
+	GetRawInputBuffer = HookGetRawInputBuffer PRIVATE
+	SetWindowsHookExA = HookSetWindowsHookExA PRIVATE
+	SetWindowsHookExW = HookSetWindowsHookExW PRIVATE
+	UnhookWindowsHookEx = HookUnhookWindowsHookEx PRIVATE
 
 	; ws2_32.dll (Uses ordinals in ws2_32.lib for most exports)
 	send = HookSend PRIVATE

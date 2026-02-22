@@ -3,14 +3,10 @@
  * SPDX-License-Identifier: BSD-3-Clause OR MIT
  */
 
-// The subdirectory to load textures from
-#define LOAD_DIR L"texreplace"
-#define LOAD_FORMAT L".png"
-#define LOAD_HASH_TEXMOD 1
-
 #define STB_IMAGE_IMPLEMENTATION
 
 #include <reshade.hpp>
+#include "config.hpp"
 #include "crc32_hash.hpp"
 #include <vector>
 #include <filesystem>
@@ -18,9 +14,28 @@
 
 using namespace reshade::api;
 
+static std::filesystem::path make_texture_file_path(uint32_t texture_hash)
+{
+	// Prepend executable directory to image files
+	wchar_t file_prefix[MAX_PATH] = L"";
+	GetModuleFileNameW(nullptr, file_prefix, ARRAYSIZE(file_prefix));
+
+	std::filesystem::path path = file_prefix;
+	path = path.parent_path();
+	path /= RESHADE_ADDON_TEXTURE_LOAD_DIR;
+
+	wchar_t hash_string[11];
+	swprintf_s(hash_string, L"0x%08X", texture_hash);
+
+	path /= hash_string;
+	path += RESHADE_ADDON_TEXTURE_LOAD_FORMAT;
+
+	return path;
+}
+
 bool load_texture_image(const resource_desc &desc, subresource_data &data, std::vector<std::vector<uint8_t>> &data_to_delete)
 {
-#if LOAD_HASH_TEXMOD
+#if RESHADE_ADDON_TEXTURE_LOAD_HASH_TEXMOD
 	// Behavior of the original TexMod (see https://github.com/codemasher/texmod/blob/master/uMod_DX9/uMod_TextureFunction.cpp#L41)
 	const uint32_t hash = ~compute_crc32(
 		static_cast<const uint8_t *>(data.data),
@@ -35,26 +50,14 @@ bool load_texture_image(const resource_desc &desc, subresource_data &data, std::
 		format_slice_pitch(desc.texture.format, data.row_pitch, desc.texture.height));
 #endif
 
-	// Prepend executable directory to image files
-	wchar_t file_prefix[MAX_PATH] = L"";
-	GetModuleFileNameW(nullptr, file_prefix, ARRAYSIZE(file_prefix));
-
-	std::filesystem::path replace_path = file_prefix;
-	replace_path  = replace_path.parent_path();
-	replace_path /= LOAD_DIR;
-
-	wchar_t hash_string[11];
-	swprintf_s(hash_string, L"0x%08X", hash);
-
-	replace_path /= hash_string;
-	replace_path += LOAD_FORMAT;
+	const std::filesystem::path file_path = make_texture_file_path(hash);
 
 	// Check if a replacement file for this texture hash exists and if so, overwrite the texture data with its contents
-	if (!std::filesystem::exists(replace_path))
+	if (!std::filesystem::exists(file_path))
 		return false;
 
 	int width = 0, height = 0, channels = 0;
-	stbi_uc *const rgba_pixel_data_p = stbi_load(replace_path.u8string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
+	stbi_uc *const rgba_pixel_data_p = stbi_load(file_path.u8string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
 	if (rgba_pixel_data_p == nullptr)
 		return false;
 
@@ -66,7 +69,7 @@ bool load_texture_image(const resource_desc &desc, subresource_data &data, std::
 	if (desc.texture.width != static_cast<uint32_t>(width) ||
 		desc.texture.height != static_cast<uint32_t>(height))
 	{
-		reshade::log_message(reshade::log_level::error, "Failed to replace texture data because dimensions do not match!");
+		reshade::log::message(reshade::log::level::error, "Failed to replace texture data because dimensions do not match!");
 		return false;
 	}
 
@@ -143,7 +146,7 @@ bool load_texture_image(const resource_desc &desc, subresource_data &data, std::
 		break;
 	default:
 		// Unsupported format
-		reshade::log_message(reshade::log_level::error, "Failed to replace texture data because format is not supported!");
+		reshade::log::message(reshade::log::level::error, "Failed to replace texture data because format is not supported!");
 		return false;
 	}
 

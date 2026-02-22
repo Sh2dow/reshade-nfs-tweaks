@@ -7,11 +7,13 @@
 
 #include "d3d12_impl_command_list.hpp"
 
-struct D3D12Device;
+class D3D12Device;
 
-struct DECLSPEC_UUID("479B29E3-9A2C-11D0-B696-00A0C903487A") D3D12GraphicsCommandList final : ID3D12GraphicsCommandList9, public reshade::d3d12::command_list_impl
+class DECLSPEC_UUID("479B29E3-9A2C-11D0-B696-00A0C903487A") D3D12GraphicsCommandList final : public ID3D12GraphicsCommandList10, public reshade::d3d12::command_list_impl
 {
+public:
 	D3D12GraphicsCommandList(D3D12Device *device, ID3D12GraphicsCommandList *original);
+	~D3D12GraphicsCommandList();
 
 	#pragma region IUnknown
 	HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObj) override;
@@ -99,7 +101,7 @@ struct DECLSPEC_UUID("479B29E3-9A2C-11D0-B696-00A0C903487A") D3D12GraphicsComman
 	#pragma endregion
 	#pragma region ID3D12GraphicsCommandList4
 	void    STDMETHODCALLTYPE BeginRenderPass(UINT NumRenderTargets, const D3D12_RENDER_PASS_RENDER_TARGET_DESC *pRenderTargets, const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC *pDepthStencil, D3D12_RENDER_PASS_FLAGS Flags) override;
-	void    STDMETHODCALLTYPE EndRenderPass(void) override;
+	void    STDMETHODCALLTYPE EndRenderPass() override;
 	void    STDMETHODCALLTYPE InitializeMetaCommand(ID3D12MetaCommand *pMetaCommand, const void *pInitializationParametersData, SIZE_T InitializationParametersDataSizeInBytes) override;
 	void    STDMETHODCALLTYPE ExecuteMetaCommand(ID3D12MetaCommand *pMetaCommand, const void *pExecutionParametersData, SIZE_T ExecutionParametersDataSizeInBytes) override;
 	void    STDMETHODCALLTYPE BuildRaytracingAccelerationStructure(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *pDesc, UINT NumPostbuildInfoDescs, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *pPostbuildInfoDescs) override;
@@ -125,10 +127,17 @@ struct DECLSPEC_UUID("479B29E3-9A2C-11D0-B696-00A0C903487A") D3D12GraphicsComman
 	void   STDMETHODCALLTYPE RSSetDepthBias(FLOAT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias) override;
 	void   STDMETHODCALLTYPE IASetIndexBufferStripCutValue(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue) override;
 	#pragma endregion
+	#pragma region ID3D12GraphicsCommandList10
+	void   STDMETHODCALLTYPE SetProgram(const D3D12_SET_PROGRAM_DESC *pDesc) override;
+	void   STDMETHODCALLTYPE DispatchGraph(const D3D12_DISPATCH_GRAPH_DESC *pDesc) override;
+	#pragma endregion
 
 	bool check_and_upgrade_interface(REFIID riid);
 
-	ULONG _ref = 1;
+	using command_list_impl::_orig;
+	LONG _ref = 1;
 	unsigned short _interface_version = 0;
+
+private:
 	D3D12Device *const _device;
 };

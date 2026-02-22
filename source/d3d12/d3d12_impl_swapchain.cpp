@@ -4,179 +4,117 @@
  */
 
 #include "d3d12_impl_device.hpp"
-#include "d3d12_impl_command_queue.hpp"
 #include "d3d12_impl_swapchain.hpp"
 #include "d3d12_impl_type_convert.hpp"
-#include "dll_log.hpp" // Include late to get HRESULT log overloads
 #include <CoreWindow.h>
 
-reshade::d3d12::swapchain_impl::swapchain_impl(device_impl *device, command_queue_impl *queue, IDXGISwapChain3 *swapchain) :
-	api_object_impl(swapchain, device, queue)
+reshade::d3d12::swapchain_impl::swapchain_impl(device_impl *device, IDXGISwapChain3 *swapchain) :
+	api_object_impl(swapchain),
+	_device_impl(device)
 {
-	_renderer_id = D3D_FEATURE_LEVEL_12_0;
-
-	// There is no swap chain in d3d12on7
-	if (com_ptr<IDXGIFactory4> factory;
-		_orig != nullptr && SUCCEEDED(_orig->GetParent(IID_PPV_ARGS(&factory))))
-	{
-		const LUID luid = device->_orig->GetAdapterLuid();
-
-		if (com_ptr<IDXGIAdapter> dxgi_adapter;
-			SUCCEEDED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&dxgi_adapter))))
-		{
-			if (DXGI_ADAPTER_DESC desc; SUCCEEDED(dxgi_adapter->GetDesc(&desc)))
-			{
-				_vendor_id = desc.VendorId;
-				_device_id = desc.DeviceId;
-
-				LOG(INFO) << "Running on " << desc.Description << '.';
-			}
-		}
-	}
-
-	// Default to three back buffers for d3d12on7
-	_backbuffers.resize(3);
-
-	if (_orig != nullptr)
-		on_init();
 }
-reshade::d3d12::swapchain_impl::~swapchain_impl()
+
+reshade::api::device *reshade::d3d12::swapchain_impl::get_device()
 {
-	on_reset();
+	return _device_impl;
+}
+
+void *reshade::d3d12::swapchain_impl::get_hwnd() const
+{
+	if (HWND hwnd = nullptr;
+		SUCCEEDED(_orig->GetHwnd(&hwnd)))
+		return hwnd;
+	else if (com_ptr<ICoreWindowInterop> window_interop; // Get window handle of the core window
+		SUCCEEDED(_orig->GetCoreWindow(IID_PPV_ARGS(&window_interop))) && SUCCEEDED(window_interop->get_WindowHandle(&hwnd)))
+		return hwnd;
+
+	DXGI_SWAP_CHAIN_DESC swap_desc = {};
+	_orig->GetDesc(&swap_desc);
+
+	return swap_desc.OutputWindow;
 }
 
 reshade::api::resource reshade::d3d12::swapchain_impl::get_back_buffer(uint32_t index)
 {
-	return to_handle(_backbuffers[index].get());
+	com_ptr<ID3D12Resource> back_buffer;
+	_orig->GetBuffer(index, IID_PPV_ARGS(&back_buffer));
+	assert(back_buffer != nullptr);
+
+	return to_handle(back_buffer.get());
 }
 
 uint32_t reshade::d3d12::swapchain_impl::get_back_buffer_count() const
 {
-	return static_cast<uint32_t>(_backbuffers.size());
+	DXGI_SWAP_CHAIN_DESC swap_desc = {};
+	_orig->GetDesc(&swap_desc);
+
+	return swap_desc.BufferCount;
 }
+
 uint32_t reshade::d3d12::swapchain_impl::get_current_back_buffer_index() const
 {
-	assert(_orig != nullptr);
-
 	return _orig->GetCurrentBackBufferIndex();
 }
 
-void reshade::d3d12::swapchain_impl::set_back_buffer_color_space(DXGI_COLOR_SPACE_TYPE type)
+bool reshade::d3d12::swapchain_impl::check_color_space_support(api::color_space color_space) const
 {
-	_back_buffer_color_space = convert_color_space(type);
-}
-
-bool reshade::d3d12::swapchain_impl::on_init()
-{
-	assert(_orig != nullptr);
-
-	DXGI_SWAP_CHAIN_DESC swap_desc;
-	// Get description from 'IDXGISwapChain' interface, since later versions are slightly different
-	if (FAILED(_orig->GetDesc(&swap_desc)))
+	if (color_space == api::color_space::unknown)
 		return false;
 
-	// Update window handle in swap chain description for UWP applications
-	if (HWND hwnd = nullptr; SUCCEEDED(_orig->GetHwnd(&hwnd)))
-		swap_desc.OutputWindow = hwnd;
-	else if (com_ptr<ICoreWindowInterop> window_interop; // Get window handle of the core window
-		SUCCEEDED(_orig->GetCoreWindow(IID_PPV_ARGS(&window_interop))) && SUCCEEDED(window_interop->get_WindowHandle(&hwnd)))
-		swap_desc.OutputWindow = hwnd;
+	UINT support;
+	return SUCCEEDED(_orig->CheckColorSpaceSupport(convert_color_space(color_space), &support)) && (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) != 0;
+}
 
-	if (swap_desc.SampleDesc.Count > 1)
+inline constexpr GUID SKID_SwapChainColorSpace = { 0x18b57e4, 0x1493, 0x4953, { 0xad, 0xf2, 0xde, 0x6d, 0x99, 0xcc, 0x5, 0xe5 } };
+
+reshade::api::color_space reshade::d3d12::swapchain_impl::get_color_space() const
+{
+	DXGI_COLOR_SPACE_TYPE color_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+	UINT color_space_size = sizeof(color_space);
+	if (FAILED(_orig->GetPrivateData(SKID_SwapChainColorSpace, &color_space_size, &color_space)))
 	{
-		LOG(WARN) << "Multisampled swap chains are unsupported with D3D12.";
-		return false;
+		DXGI_SWAP_CHAIN_DESC swap_desc = {};
+		_orig->GetDesc(&swap_desc);
+
+		if (swap_desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+			color_space = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
 	}
 
-	// Get back buffer textures
-	_backbuffers.resize(swap_desc.BufferCount);
-	for (UINT i = 0; i < swap_desc.BufferCount; ++i)
-	{
-		if (FAILED(_orig->GetBuffer(i, IID_PPV_ARGS(&_backbuffers[i]))))
-			return false;
-		assert(_backbuffers[i] != nullptr);
-	}
+	if (color_space == DXGI_COLOR_SPACE_CUSTOM)
+		return api::color_space::unknown;
 
-	assert(swap_desc.BufferUsage & DXGI_USAGE_RENDER_TARGET_OUTPUT);
-
-#if RESHADE_ADDON
-	invoke_addon_event<addon_event::init_swapchain>(this);
-#endif
-
-	return runtime::on_init(swap_desc.OutputWindow);
-}
-void reshade::d3d12::swapchain_impl::on_reset()
-{
-	if (_backbuffers.empty())
-		return;
-
-	runtime::on_reset();
-
-#if RESHADE_ADDON
-	invoke_addon_event<addon_event::destroy_swapchain>(this);
-#endif
-
-	// Make sure none of the resources below are currently in use (in case the runtime was initialized previously)
-	_graphics_queue->wait_idle();
-
-	_backbuffers.clear();
+	return convert_color_space(color_space);
 }
 
-void reshade::d3d12::swapchain_impl::on_present()
+reshade::d3d12::swapchain_d3d12on7_impl::swapchain_d3d12on7_impl(device_impl *device, ID3D12CommandQueueDownlevel *command_queue_downlevel) :
+	api_object_impl(command_queue_downlevel),
+	_device_impl(device)
 {
-	if (!is_initialized())
-		return;
-
-	runtime::on_present();
+	// Default to three back buffers for d3d12on7
+	_back_buffers.resize(3);
 }
 
-reshade::d3d12::swapchain_d3d12on7_impl::swapchain_d3d12on7_impl(device_impl *device, command_queue_impl *queue) : swapchain_impl(device, queue, nullptr)
+reshade::api::device *reshade::d3d12::swapchain_d3d12on7_impl::get_device()
 {
+	return _device_impl;
+}
+
+void *reshade::d3d12::swapchain_d3d12on7_impl::get_hwnd() const
+{
+	return _hwnd;
+}
+
+reshade::api::resource reshade::d3d12::swapchain_d3d12on7_impl::get_back_buffer(uint32_t index)
+{
+	return to_handle(_back_buffers[index].get());
+}
+
+uint32_t reshade::d3d12::swapchain_d3d12on7_impl::get_back_buffer_count() const
+{
+	return static_cast<uint32_t>(_back_buffers.size());
 }
 
 uint32_t reshade::d3d12::swapchain_d3d12on7_impl::get_current_back_buffer_index() const
 {
 	return _swap_index;
-}
-
-bool reshade::d3d12::swapchain_d3d12on7_impl::on_present(ID3D12Resource *source, HWND hwnd)
-{
-	assert(source != nullptr);
-
-	_swap_index = (_swap_index + 1) % static_cast<UINT>(_backbuffers.size());
-
-	// Update source texture render target view
-	if (_backbuffers[_swap_index] != source)
-	{
-		runtime::on_reset();
-
-#if RESHADE_ADDON
-		if (_backbuffers[0] != nullptr)
-		{
-			invoke_addon_event<addon_event::destroy_swapchain>(this);
-		}
-#endif
-
-		// Reduce number of back buffers if less are used than predicted
-		if (const auto it = std::find(_backbuffers.begin(), _backbuffers.end(), source); it != _backbuffers.end())
-			_backbuffers.erase(it);
-		else
-			_backbuffers[_swap_index] = source;
-
-		// Do not initialize before all back buffers have been set
-		// The first to be set is at index 1 due to the addition above, so it is sufficient to check the last to be set, which will be at index 0
-		if (_backbuffers[0] != nullptr)
-		{
-#if RESHADE_ADDON
-			invoke_addon_event<addon_event::init_swapchain>(this);
-#endif
-
-			if (!runtime::on_init(hwnd))
-				return false;
-		}
-	}
-
-	// Is not initialized the first few frames, but that is fine, since 'on_present' does an 'is_initialized' check
-	swapchain_impl::on_present();
-	return true;
 }

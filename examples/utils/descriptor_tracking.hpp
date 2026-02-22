@@ -12,7 +12,7 @@
 /// <summary>
 /// An instance of this is automatically created for all devices and can be queried with <c>device->get_private_data&lt;descriptor_tracking&gt;()</c> (assuming descriptor tracking was registered via <see cref="descriptor_tracking::register_events"/>).
 /// </summary>
-class __declspec(uuid("33319e83-387c-448e-881c-7e68fc2e52c4")) descriptor_tracking
+class __declspec(uuid("f02b21ba-f5dd-44af-9e90-c54535a98ce3")) descriptor_tracking
 {
 public:
 	/// <summary>
@@ -25,13 +25,18 @@ public:
 	static void unregister_events();
 
 	/// <summary>
-	/// Gets the sampler in a descriptor set at the specified offset.
+	/// Gets the buffer range in a descriptor table at the specified offset.
+	/// </summary>
+	reshade::api::buffer_range get_buffer_range(reshade::api::descriptor_heap heap, uint32_t offset) const;
+
+	/// <summary>
+	/// Gets the sampler in a descriptor table at the specified offset.
 	/// </summary>
 	reshade::api::sampler get_sampler(reshade::api::descriptor_heap heap, uint32_t offset) const;
 	/// <summary>
-	/// Gets the shader resource view in a descriptor set at the specified offset.
+	/// Gets the resource view in a descriptor table at the specified offset.
 	/// </summary>
-	reshade::api::resource_view get_shader_resource_view(reshade::api::descriptor_heap heap, uint32_t offset) const;
+	reshade::api::resource_view get_resource_view(reshade::api::descriptor_heap heap, uint32_t offset) const;
 
 	/// <summary>
 	/// Gets the description that was used to create the specified pipeline layout parameter.
@@ -48,9 +53,19 @@ private:
 	static bool on_copy_descriptor_tables(reshade::api::device *device, uint32_t count, const reshade::api::descriptor_table_copy *copies);
 	static bool on_update_descriptor_tables(reshade::api::device *device, uint32_t count, const reshade::api::descriptor_table_update *updates);
 
+	struct descriptor_data
+	{
+		descriptor_data() : b() {}
+
+		union
+		{
+			reshade::api::buffer_range b;
+			reshade::api::sampler_with_resource_view t;
+		};
+	};
 	struct descriptor_heap_data
 	{
-		concurrency::concurrent_vector<std::pair<reshade::api::descriptor_type, reshade::api::sampler_with_resource_view>> descriptors;
+		concurrency::concurrent_vector<std::pair<reshade::api::descriptor_type, descriptor_data>> descriptors;
 	};
 	struct descriptor_heap_hash : std::hash<uint64_t>
 	{

@@ -5,9 +5,9 @@
 
 #pragma once
 
+#include <mutex>
 #include <memory>
 #include <string>
-#include <shared_mutex>
 
 namespace reshade
 {
@@ -43,8 +43,6 @@ namespace reshade
 		/// <param name="window">Window handle of the target window.</param>
 		/// <returns>Pointer to the input manager registered for this <paramref name="window"/>.</returns>
 		static std::shared_ptr<input> register_window(window_handle window);
-
-		window_handle get_window_handle() const { return _window; }
 
 		// Before accessing input data with any of the member functions below, first call "lock()" and keep the returned object alive while accessing it.
 
@@ -82,17 +80,25 @@ namespace reshade
 		/// </summary>
 		void block_mouse_input(bool enable);
 		bool is_blocking_mouse_input() const { return _block_mouse; }
+		static bool is_blocking_any_mouse_input(window_handle window = nullptr);
 		/// <summary>
 		/// Set to <see langword="true"/> to prevent keyboard input window messages from reaching the application.
 		/// </summary>
 		void block_keyboard_input(bool enable);
 		bool is_blocking_keyboard_input() const { return _block_keyboard; }
+		static bool is_blocking_any_keyboard_input(window_handle window = nullptr);
+		/// <summary>
+		/// Set to <see langword="true"/> to prevent 'SetCursorPos' calls from warping the cursor to a new position.
+		/// </summary>
+		void block_mouse_cursor_warping(bool enable);
+		bool is_blocking_mouse_cursor_warping() const { return _block_cursor_warping; }
+		static bool is_blocking_any_mouse_cursor_warping();
 
 		/// <summary>
 		/// Locks access to the input data so it cannot be modified in another thread.
 		/// </summary>
 		/// <returns>RAII object holding the lock, which releases it after going out of scope.</returns>
-		auto lock() { return std::shared_lock<std::shared_mutex>(_mutex); }
+		auto lock() { return std::unique_lock<std::recursive_mutex>(_mutex); }
 
 		/// <summary>
 		/// Notifies the input manager to advance a frame.
@@ -119,10 +125,11 @@ namespace reshade
 		static bool handle_window_message(const void *message_data);
 
 	private:
-		std::shared_mutex _mutex;
+		std::recursive_mutex _mutex;
 		window_handle _window;
 		bool _block_mouse = false;
 		bool _block_keyboard = false;
+		bool _block_cursor_warping = false;
 		uint8_t _keys[256] = {};
 		uint8_t _last_keys[256] = {};
 		unsigned int _keys_time[256] = {};

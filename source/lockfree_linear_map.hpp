@@ -48,7 +48,7 @@ public:
 	/// <param name="args">Constructor arguments to use for creation.</param>
 	/// <returns>Reference to the newly added value.</returns>
 	template <typename... Args>
-	TValue &emplace(TKey key, Args... args)
+	TValue &emplace(TKey key, Args &&... args)
 	{
 		// Create a pointer to the new value using copy construction
 		TValue *const new_value = new TValue(std::forward<Args>(args)...);
@@ -139,11 +139,11 @@ public:
 	/// <summary>
 	/// Special key indicating that the entry is empty.
 	/// </summary>
-	static constexpr TKey no_value = (TKey)0;
+	static inline const TKey no_value = (TKey)0;
 	/// <summary>
 	/// Special key indicating that the entry is currently being updated.
 	/// </summary>
-	static constexpr TKey update_value = (TKey)1;
+	static inline const TKey update_value = (TKey)-1;
 
 	/// <summary>
 	/// Gets the pointer associated with the specified <paramref name="key"/>.

@@ -4,37 +4,35 @@
  */
 
 #include "runtime.hpp"
-#include "version.h"
 #include <Windows.h>
 #include <WinInet.h>
 
-struct scoped_handle
+struct scoped_internet_handle
 {
-	scoped_handle(HINTERNET handle) : handle(handle) {}
-	~scoped_handle() { InternetCloseHandle(handle); }
+	scoped_internet_handle(HINTERNET handle) : handle(handle) {}
+	~scoped_internet_handle() { InternetCloseHandle(handle); }
 
-	inline operator HINTERNET() const { return handle; }
+	operator HINTERNET() const { return handle; }
 
 private:
 	HINTERNET handle;
 };
 
-bool reshade::runtime::s_needs_update = false;
 unsigned int reshade::runtime::s_latest_version[3] = {};
 
 void reshade::runtime::check_for_update()
 {
-#ifdef NDEBUG
+#if defined(NDEBUG) && !defined(RESHADE_TEST_APPLICATION)
 	if (s_latest_version[0] != 0)
 		return;
 
-	const scoped_handle handle = InternetOpen(TEXT("reshade"), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+	const scoped_internet_handle handle = InternetOpen(TEXT("reshade"), INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
 	if (handle == nullptr)
 		return;
 
 	constexpr auto api_url = TEXT("https://api.github.com/repos/crosire/reshade/tags");
 
-	const scoped_handle request = InternetOpenUrl(handle, api_url, nullptr, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
+	const scoped_internet_handle request = InternetOpenUrl(handle, api_url, nullptr, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_NO_CACHE_WRITE, 0);
 	if (request == nullptr)
 		return;
 
@@ -58,10 +56,6 @@ void reshade::runtime::check_for_update()
 		s_latest_version[0] = static_cast<unsigned int>(std::strtoul(version_major_offset, nullptr, 10));
 		s_latest_version[1] = static_cast<unsigned int>(std::strtoul(version_minor_offset, nullptr, 10));
 		s_latest_version[2] = static_cast<unsigned int>(std::strtoul(version_revision_offset, nullptr, 10));
-
-		s_needs_update = (s_latest_version[0] > VERSION_MAJOR) ||
-			(s_latest_version[0] == VERSION_MAJOR && s_latest_version[1] > VERSION_MINOR) ||
-			(s_latest_version[0] == VERSION_MAJOR && s_latest_version[1] == VERSION_MINOR && s_latest_version[2] > VERSION_REVISION);
 	}
 #endif
 }

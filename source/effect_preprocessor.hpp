@@ -39,18 +39,18 @@ namespace reshadefx
 		void add_include_path(const std::filesystem::path &path);
 
 		/// <summary>
-		/// Adds a new macro definition. This is equal to appending '#define name macro' to this preprocessor instance.
+		/// Adds a new macro definition. This is equal to appending '#define name definition' to this preprocessor instance.
 		/// </summary>
 		/// <param name="name">Name of the macro to define.</param>
-		/// <param name="macro">Definition of the macro function or value.</param>
-		/// <returns></returns>
-		bool add_macro_definition(const std::string &name, const macro &macro);
+		/// <param name="definition">Definition of the macro function or value.</param>
+		/// <returns><see langword="true"/> if the macro did not exist, <see langword="false"/> otherwise.</returns>
+		bool add_macro_definition(const std::string &name, const macro &definition);
 		/// <summary>
-		/// Adds a new macro value definition. This is equal to appending '#define name macro' to this preprocessor instance.
+		/// Adds a new macro value definition. This is equal to appending '#define name value' to this preprocessor instance.
 		/// </summary>
 		/// <param name="name">Name of the macro to define.</param>
 		/// <param name="value">Value to define that macro to.</param>
-		/// <returns></returns>
+		/// <returns><see langword="true"/> if the macro did not exist, <see langword="false"/> otherwise.</returns>
 		bool add_macro_definition(const std::string &name, std::string value = "1")
 		{
 			return add_macro_definition(name, macro { std::move(value), {}, true });
@@ -80,7 +80,7 @@ namespace reshadefx
 		const std::string &output() const { return _output; }
 
 		/// <summary>
-		/// Gets a list of all included files.
+		/// Gets a list of paths to all the included files.
 		/// </summary>
 		std::vector<std::filesystem::path> included_files() const;
 
@@ -88,11 +88,6 @@ namespace reshadefx
 		/// Gets a list of all defines that were used in #ifdef and #ifndef lines.
 		/// </summary>
 		std::vector<std::pair<std::string, std::string>> used_macro_definitions() const;
-
-		/// <summary>
-		/// Gets a list of pragma directives that occured.
-		/// </summary>
-		std::vector<std::pair<std::string, std::string>> used_pragma_directives() const { return _used_pragmas; }
 
 	private:
 		struct if_level
@@ -139,28 +134,25 @@ namespace reshadefx
 		bool evaluate_identifier_as_macro();
 
 		bool is_defined(const std::string &name) const;
-		void expand_macro(const std::string &name, const macro &macro, const std::vector<std::string> &arguments);
-		void create_macro_replacement_list(macro &macro);
+		void expand_macro(const std::string &name, const macro &definition, const std::vector<std::string> &arguments);
+		void create_macro_replacement_list(macro &definition);
 
-		bool _success = true;
 		std::string _output, _errors;
 
-		std::string _current_token_raw_data;
-		reshadefx::token _token;
-		location _output_location;
 		std::vector<input_level> _input_stack;
 		size_t _next_input_index = 0;
 		size_t _current_input_index = 0;
-
-		std::vector<if_level> _if_stack;
+		reshadefx::token _token;
+		std::string _current_token_raw_data;
+		reshadefx::location _output_location;
 
 		unsigned short _recursion_count = 0;
 		std::unordered_set<std::string> _used_macros;
 		std::unordered_map<std::string, macro> _macros;
 
+		std::vector<if_level> _if_stack;
+
 		std::vector<std::filesystem::path> _include_paths;
 		std::unordered_map<std::string, std::string> _file_cache;
-
-		std::vector<std::pair<std::string, std::string>> _used_pragmas;
 	};
 }

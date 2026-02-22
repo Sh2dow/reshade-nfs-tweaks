@@ -6,7 +6,7 @@
 #pragma once
 
 #include "d3d12_impl_command_list_immediate.hpp"
-#include <shared_mutex>
+#include <mutex>
 
 namespace reshade::d3d12
 {
@@ -30,8 +30,13 @@ namespace reshade::d3d12
 		void end_debug_event() final;
 		void insert_debug_marker(const char *label, const float color[4]) final;
 
+		bool wait(api::fence fence, uint64_t value) final;
+		bool signal(api::fence fence, uint64_t value) final;
+
+		uint64_t get_timestamp_frequency() const final;
+
 		// 'ID3D12CommandQueue' is thread-safe, so need to lock when accessed from multiple threads
-		std::shared_mutex _mutex;
+		std::recursive_mutex _mutex;
 
 	private:
 		device_impl *const _device_impl;

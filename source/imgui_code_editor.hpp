@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 #include <unordered_map>
+#include <cstdint>
 
 struct ImFont;
 struct ImDrawData;
@@ -85,7 +86,8 @@ namespace reshade::imgui
 		/// <param name="palette">Color palette used for syntax highlighting.</param>
 		/// <param name="border">Set to <see langword="true"/> to surround the child window with a border line.</param>
 		/// <param name="font">Font used for rendering the text (<see langword="nullptr"/> to use the default).</param>
-		void render(const char *title, const uint32_t palette[color_palette_max], bool border = false, ImFont *font = nullptr);
+		/// <param name="font_size">Font size used for rendering the text (or zero to use the current font size).</param>
+		void render(const char *title, const uint32_t palette[color_palette_max], bool border = false, ImFont *font = nullptr, float font_size = 0.0f);
 
 		/// <summary>
 		/// Sets the selection to be between the specified <paramref name="beg"/>in and <paramref name="end"/> positions.
@@ -110,20 +112,20 @@ namespace reshade::imgui
 		/// <param name="backwards">Set to <see langword="true"/> to search in reverse direction, otherwise searches forwards.</param>
 		/// <param name="with_selection">Set to <see langword="true"/> to start search at selection boundaries, rather than the cursor position.</param>
 		/// <returns><see langword="true"/> when the search <paramref name="text"/> was found, <see langword="false"/> otherwise.</returns>
-		bool find_and_scroll_to_text(const std::string_view &text, bool backwards = false, bool with_selection = false);
+		bool find_and_scroll_to_text(const std::string_view text, bool backwards = false, bool with_selection = false);
 
 		/// <summary>
 		/// Replaces the text of this text editor with the specified string.
 		/// </summary>
-		void set_text(const std::string_view &text);
+		void set_text(const std::string_view text);
 		/// <summary>
 		/// Clears the text of this text editor to an empty string.
 		/// </summary>
 		void clear_text();
 		/// <summary>
-		/// Inserts the specified <paramref name="text"/> at the cursor position.
+		/// Inserts the specified <paramref name="text"/> at the end.
 		/// </summary>
-		void insert_text(const std::string_view &text);
+		void append_text(const std::string_view text);
 		/// <summary>
 		/// Returns the entire text of this text editor as a string.
 		/// </summary>
@@ -169,7 +171,7 @@ namespace reshade::imgui
 		/// <param name="line">Line that should be highlighted and show an error message when hovered with the mouse.</param>
 		/// <param name="message">Error message that should be displayed.</param>
 		/// <param name="warning">Set to <see langword="true"/> to indicate that this is a warning instead of an error, which uses different color coding.</param>
-		void add_error(size_t line, const std::string &message, bool warning = false) { _errors.emplace(line, std::make_pair(message, warning)); }
+		void add_error(size_t line, const std::string_view message, bool warning = false) { _errors.emplace(line, std::make_pair(message, warning)); }
 		/// <summary>
 		/// Removes all displayed errors that were previously added via <see cref="add_error"/>.
 		/// </summary>
@@ -197,10 +199,24 @@ namespace reshade::imgui
 		/// </summary>
 		void set_line_spacing(float spacing) { _line_spacing = spacing; }
 
+		/// <summary>
+		/// Changes the color of a section of text.
+		/// </summary>
+		/// <param name="beg">First character to be colored.</param>
+		/// <param name="end">Last character to be colored.</param>
+		/// <param name="col">Color to use.</param>
+		void colorize(const text_pos &beg, const text_pos &end, color col);
+
+		/// <summary>
+		/// Returns the position at the end of the current text of this text editor.
+		/// </summary>
+		/// <returns></returns>
+		text_pos get_text_end() const { return _lines.size() - 1; }
+
 	private:
 		struct glyph
 		{
-			char c = '\0';
+			uint32_t c = '\0';
 			color col = color_default;
 		};
 
@@ -216,7 +232,8 @@ namespace reshade::imgui
 
 		void record_undo(undo_record &&record);
 
-		void insert_character(char c, bool auto_indent);
+		void insert_text(const std::string_view text);
+		void insert_character(uint32_t c, bool auto_indent);
 
 		void delete_next();
 		void delete_previous();
@@ -257,7 +274,7 @@ namespace reshade::imgui
 		text_pos _select_end;
 		text_pos _interactive_beg;
 		text_pos _interactive_end;
-		std::string _highlighted;
+		std::vector<uint32_t> _highlighted;
 		std::string _last_copy_string;
 		bool _last_copy_from_empty_selection = false;
 
@@ -272,6 +289,7 @@ namespace reshade::imgui
 		char _search_text[256] = "";
 		char _replace_text[256] = "";
 		bool _search_case_sensitive = false;
+		bool _search_whole_word = false;
 
 		size_t _colorize_line_beg = 0;
 		size_t _colorize_line_end = 0;

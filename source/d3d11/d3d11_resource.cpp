@@ -17,12 +17,14 @@ void STDMETHODCALLTYPE ID3D11Resource_GetDevice(ID3D11Resource *pResource, ID3D1
 	const auto device = *ppDevice;
 	assert(device != nullptr);
 
-	const auto device_proxy = get_private_pointer_d3dx<D3D11Device>(device);
-	if (device_proxy != nullptr)
-	{
-		assert(device != device_proxy);
+	// Do not return proxy device when video support is enabled due to checks performed by the Microsoft Media Foundation library (see also comment in 'D3D11Device::QueryInterface')
+	if (device->GetCreationFlags() & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
+		return;
 
-		*ppDevice = device_proxy;
+	const auto device_proxy = get_private_pointer_d3dx<D3D11Device>(device);
+	if (device_proxy != nullptr && device_proxy->_orig == device)
+	{
 		InterlockedIncrement(&device_proxy->_ref);
+		*ppDevice = device_proxy;
 	}
 }

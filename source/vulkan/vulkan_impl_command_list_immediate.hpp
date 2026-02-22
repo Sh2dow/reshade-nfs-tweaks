@@ -11,13 +11,15 @@ namespace reshade::vulkan
 {
 	class command_list_immediate_impl : public command_list_impl
 	{
-		static constexpr uint32_t NUM_COMMAND_FRAMES = 4; // Use power of two so that modulo can be replaced with bitwise operation
+		static constexpr uint32_t NUM_COMMAND_FRAMES = 8; // Use power of two so that modulo can be replaced with bitwise operation
 
 	public:
+		static thread_local command_list_immediate_impl *s_last_immediate_command_list;
+
 		command_list_immediate_impl(device_impl *device, uint32_t queue_family_index, VkQueue queue);
 		~command_list_immediate_impl();
 
-		bool flush(VkSemaphore *wait_semaphores, uint32_t &num_wait_semaphores);
+		bool flush(VkSubmitInfo &semaphore_info);
 		bool flush_and_wait();
 
 	private:

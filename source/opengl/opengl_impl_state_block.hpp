@@ -5,78 +5,90 @@
 
 #pragma once
 
-#include <GL/gl3w.h>
+#include <glad/gl.h>
 
 namespace reshade::opengl
 {
+	class device_impl;
+
 	class state_block
 	{
 	public:
-		state_block();
+		explicit state_block(device_impl *device);
 
-		void capture(bool compatibility);
-		void apply(bool compatibility) const;
+		void capture();
+		void apply() const;
 
 	private:
-		GLint _copy_read;
-		GLint _copy_write;
+		device_impl *const _device_impl;
 
-		GLint _vao;
-		GLint _vbo;
-		GLint _ibo;
-		GLint _ubo[4];
-		GLintptr _ubo_offsets[4];
-		GLsizeiptr _ubo_sizes[4];
-		GLint _active_ubo;
-		GLint _program;
-		GLint _textures2d[32], _samplers[32];
-		GLint _active_texture;
+		GLint _copy_read = 0;
+		GLint _copy_write = 0;
 
-		GLint _read_fbo;
-		GLint _draw_fbo;
-		GLint _viewport[4];
-		GLint _read_buffer;
-		GLint _draw_buffers[8];
+		GLint _vao = 0;
+		GLint _vbo = 0;
+		GLint _ibo = 0;
+		GLint _ubo[4] = {};
+		GLintptr _ubo_offsets[4] = {};
+		GLsizeiptr _ubo_sizes[4] = {};
+		GLint _active_ubo = 0;
+		GLint _program = 0;
+		GLint _textures2d[32] = {}, _samplers[32] = {};
+		GLint _active_texture = 0;
 
-		GLboolean _srgb_enable;
-		GLboolean _alpha_test;
+		GLint _read_fbo = 0;
+		GLint _draw_fbo = 0;
+		GLint _viewport[4] = {};
+		GLint _read_buffer = 0;
+		GLint _draw_buffers[8] = {};
 
-		GLboolean _sample_alpha_to_coverage;
-		GLboolean _blend_enable;
-		GLboolean _logic_op_enable;
-		GLint _blend_src;
-		GLint _blend_dst;
-		GLint _blend_src_alpha;
-		GLint _blend_dst_alpha;
-		GLint _blend_eq;
-		GLint _blend_eq_alpha;
-		GLint _logic_op;
-		GLfloat _blend_constant[4];
-		GLboolean _color_write_mask[4];
+		GLboolean _srgb_enable = GL_FALSE;
+		GLboolean _alpha_test = GL_FALSE;
 
-		GLint _polygon_mode;
-		GLboolean _cull_enable;
-		GLint _cull_mode;
-		GLint _front_face;
-		GLboolean _depth_clamp;
-		GLboolean _scissor_test;
-		GLint _scissor_rect[4];
-		GLboolean _multisample_enable;
-		GLboolean _line_smooth_enable;
+		GLboolean _sample_alpha_to_coverage = GL_FALSE;
+		GLboolean _blend_enable[8] = {};
+		GLboolean _logic_op_enable = GL_FALSE;
+		GLint _blend_src[8] = {};
+		GLint _blend_dst[8] = {};
+		GLint _blend_src_alpha[8] = {};
+		GLint _blend_dst_alpha[8] = {};
+		GLint _blend_eq[8] = {};
+		GLint _blend_eq_alpha[8] = {};
+		GLfloat _blend_constant[4] = {};
+		GLint _logic_op = GL_NONE;
+		GLboolean _color_write_mask[8][4] = {};
+		GLint _sample_mask = 0;
 
-		GLboolean _depth_test;
-		GLboolean _depth_mask;
-		GLint _depth_func;
-		GLboolean _stencil_test;
-		GLint _stencil_func;
-		GLint _stencil_read_mask;
-		GLint _stencil_write_mask;
-		GLint _stencil_reference_value;
-		GLint _stencil_op_fail;
-		GLint _stencil_op_depth_fail;
-		GLint _stencil_op_depth_pass;
+		GLint _polygon_mode = GL_NONE;
+		GLboolean _cull_enable = GL_FALSE;
+		GLint _cull_mode = GL_NONE;
+		GLint _front_face = GL_NONE;
+		GLboolean _depth_clamp = GL_FALSE;
+		GLboolean _scissor_test = GL_FALSE;
+		GLint _scissor_rect[4] = {};
+		GLboolean _multisample_enable = GL_FALSE;
+		GLboolean _line_smooth_enable = GL_FALSE;
 
-		GLint _clip_origin;
-		GLint _clip_depthmode;
+		GLboolean _depth_test = GL_FALSE;
+		GLboolean _depth_mask = GL_TRUE;
+		GLint _depth_func = GL_LESS;
+		GLboolean _stencil_test = GL_FALSE;
+		GLint _front_stencil_read_mask = 0xFF;
+		GLint _front_stencil_write_mask = 0xFF;
+		GLint _front_stencil_reference_value = 0;
+		GLint _front_stencil_func = GL_ALWAYS;
+		GLint _front_stencil_pass_op = GL_KEEP;
+		GLint _front_stencil_fail_op = GL_KEEP;
+		GLint _front_stencil_depth_fail_op = GL_KEEP;
+		GLint _back_stencil_read_mask = 0xFF;
+		GLint _back_stencil_write_mask = 0xFF;
+		GLint _back_stencil_reference_value = 0;
+		GLint _back_stencil_func = GL_ALWAYS;
+		GLint _back_stencil_pass_op = GL_KEEP;
+		GLint _back_stencil_fail_op = GL_KEEP;
+		GLint _back_stencil_depth_fail_op = GL_KEEP;
+
+		GLint _clip_origin = GL_NONE;
+		GLint _clip_depthmode = GL_NONE;
 	};
 }

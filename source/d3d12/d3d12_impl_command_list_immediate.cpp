@@ -6,7 +6,9 @@
 #include "d3d12_impl_device.hpp"
 #include "d3d12_impl_command_list_immediate.hpp"
 #include "d3d12_impl_type_convert.hpp"
-#include "dll_log.hpp" // Include late to get HRESULT log overloads
+#include "dll_log.hpp" // Include late to get 'hr_to_string' helper function
+
+thread_local reshade::d3d12::command_list_immediate_impl *reshade::d3d12::command_list_immediate_impl::s_last_immediate_command_list = nullptr;
 
 reshade::d3d12::command_list_immediate_impl::command_list_immediate_impl(device_impl *device, ID3D12CommandQueue *queue) :
 	command_list_impl(device, nullptr),
@@ -30,10 +32,18 @@ reshade::d3d12::command_list_immediate_impl::command_list_immediate_impl(device_
 
 	// Create and open the command list for recording
 	if (SUCCEEDED(_device_impl->_orig->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _cmd_alloc[_cmd_index].get(), nullptr, IID_PPV_ARGS(&_orig))))
+	{
 		_orig->SetName(L"ReShade immediate command list");
+		on_init();
+	}
+
+	s_last_immediate_command_list = this;
 }
 reshade::d3d12::command_list_immediate_impl::~command_list_immediate_impl()
 {
+	if (this == s_last_immediate_command_list)
+		s_last_immediate_command_list = nullptr;
+
 	if (_orig != nullptr)
 		_orig->Release();
 	if (_fence_event != nullptr)
@@ -53,15 +63,52 @@ void reshade::d3d12::command_list_immediate_impl::end_query(api::query_heap heap
 	UINT extra_data_size = sizeof(extra_data);
 	if (SUCCEEDED(heap_object->GetPrivateData(extra_data_guid, &extra_data_size, &extra_data)))
 	{
-		_orig->ResolveQueryData(heap_object, convert_query_type(type), index, 1, extra_data.readback_resource, index * sizeof(uint64_t));
+		assert(extra_data.type == type);
+
+		_orig->ResolveQueryData(heap_object, convert_query_type(type), index, 1, extra_data.readback_resource, static_cast<UINT64>(index) * get_query_size(type).first);
 
 		extra_data.fences[index].second++;
 		_current_query_fences.push_back(extra_data.fences[index]);
 	}
 }
+void reshade::d3d12::command_list_immediate_impl::query_acceleration_structures(uint32_t count, const api::resource_view *acceleration_structures, api::query_heap heap, api::query_type type, uint32_t first)
+{
+	command_list_impl::query_acceleration_structures(count, acceleration_structures, heap, type, first);
+
+	const auto heap_object = reinterpret_cast<ID3D12Resource *>(heap.handle);
+
+	query_heap_extra_data extra_data;
+	UINT extra_data_size = sizeof(extra_data);
+	if (SUCCEEDED(heap_object->GetPrivateData(extra_data_guid, &extra_data_size, &extra_data)))
+	{
+		assert(extra_data.type == type);
+
+		const uint32_t query_size = get_query_size(type).first;
+
+		for (uint32_t i = 0; i < std::min(count, extra_data.count); ++i)
+		{
+			D3D12_RESOURCE_BARRIER barrier = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION };
+			barrier.Transition.pResource = heap_object;
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			_orig->ResourceBarrier(1, &barrier);
+
+			_orig->CopyBufferRegion(extra_data.readback_resource, static_cast<UINT64>(first) * query_size, heap_object, static_cast<UINT64>(first) * query_size, query_size);
+
+			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+			_orig->ResourceBarrier(1, &barrier);
+
+			extra_data.fences[first + i].second++;
+			_current_query_fences.push_back(extra_data.fences[first + i]);
+		}
+	}
+}
 
 bool reshade::d3d12::command_list_immediate_impl::flush()
 {
+	s_last_immediate_command_list = this;
+
 	if (!_has_commands)
 		return true;
 	_has_commands = false;
@@ -75,14 +122,18 @@ bool reshade::d3d12::command_list_immediate_impl::flush()
 
 	if (const HRESULT hr = _orig->Close(); FAILED(hr))
 	{
-		LOG(ERROR) << "Failed to close immediate command list!" << " HRESULT is " << hr << '.';
+		log::message(log::level::error, "Failed to close immediate command list with error code %s!", reshade::log::hr_to_string(hr).c_str());
 
 		_current_query_fences.clear();
 
 		// A command list that failed to close can never be reset, so destroy it and create a new one
 		_orig->Release(); _orig = nullptr;
 		if (SUCCEEDED(_device_impl->_orig->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _cmd_alloc[_cmd_index].get(), nullptr, IID_PPV_ARGS(&_orig))))
+		{
 			_orig->SetName(L"ReShade immediate command list");
+			on_init();
+		}
+
 		return false;
 	}
 
@@ -111,7 +162,13 @@ bool reshade::d3d12::command_list_immediate_impl::flush()
 	_cmd_alloc[_cmd_index]->Reset();
 
 	// Reset command list using current command allocator and put it into the recording state
-	return SUCCEEDED(_orig->Reset(_cmd_alloc[_cmd_index].get(), nullptr));
+	if (const HRESULT hr = _orig->Reset(_cmd_alloc[_cmd_index].get(), nullptr); FAILED(hr))
+	{
+		log::message(log::level::error, "Failed to reset immediate command list with error code %s!", reshade::log::hr_to_string(hr).c_str());
+		return false;
+	}
+
+	return true;
 }
 bool reshade::d3d12::command_list_immediate_impl::flush_and_wait()
 {

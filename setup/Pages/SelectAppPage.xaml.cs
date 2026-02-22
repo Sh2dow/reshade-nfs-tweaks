@@ -48,58 +48,58 @@ static class HashSetExtensionMethods
 
 namespace ReShade.Setup.Pages
 {
-	public partial class SelectAppPage : Page
+	class App
 	{
-		class ProgramItem
+		public App(string path, FileVersionInfo info)
 		{
-			public ProgramItem(string path, FileVersionInfo info)
+			Path = path;
+			Name = info.FileDescription;
+			if (Name is null || Name.Trim().Length == 0)
 			{
-				Path = path;
-				Name = info.FileDescription;
-				if (Name is null || Name.Trim().Length == 0)
+				Name = System.IO.Path.GetFileName(path);
+
+				int length = Name.LastIndexOf('.');
+				if (length > 1)
 				{
-					Name = System.IO.Path.GetFileNameWithoutExtension(path);
-					if (char.IsLower(Name[0]))
-					{
-						Name = CultureInfo.CurrentCulture.TextInfo.ToTitleCase(Name);
-					}
+					Name = Name.Substring(0, length);
 				}
 
-				Name += " (" + System.IO.Path.GetFileName(path) + ")";
-
-				try
+				if (char.IsLower(Name.First()))
 				{
-					using (var ico = System.Drawing.Icon.ExtractAssociatedIcon(path))
-					{
-						Icon = Imaging.CreateBitmapSourceFromHIcon(ico.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
-					}
-
-					LastAccess = File.GetLastAccessTime(path).ToString("s");
-				}
-				catch
-				{
-					LastAccess = string.Empty;
+					Name = CultureInfo.CurrentCulture.TextInfo.ToTitleCase(Name);
 				}
 			}
 
-			public string Name { get; }
-			public string Path { get; }
-			public ImageSource Icon { get; }
-			public string LastAccess { get; }
+			Name += " (" + System.IO.Path.GetFileName(path) + ")";
+
+			try
+			{
+				using (var ico = System.Drawing.Icon.ExtractAssociatedIcon(path))
+				{
+					Icon = Imaging.CreateBitmapSourceFromHIcon(ico.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+				}
+
+				LastAccess = File.GetLastAccessTime(path).ToString("s");
+			}
+			catch
+			{
+				LastAccess = string.Empty;
+			}
 		}
 
-		Thread UpdateThread = null;
-		AutoResetEvent SuspendUpdateThreadEvent = new AutoResetEvent(false);
-		bool SuspendUpdateThread = false;
-		bool IgnorePathBoxChanged = false;
-		public string FileName { get => PathBox.Text; set => PathBox.Text = value; }
-		ObservableCollection<ProgramItem> ProgramListItems = new ObservableCollection<ProgramItem>();
+		public string Name { get; }
+		public string Path { get; }
+		public ImageSource Icon { get; }
+		public string LastAccess { get; }
+	}
 
+	public partial class SelectAppPage : Page
+	{
 		public SelectAppPage()
 		{
 			InitializeComponent();
 
-			ProgramList.ItemsSource = CollectionViewSource.GetDefaultView(ProgramListItems);
+			ItemsListBox.ItemsSource = CollectionViewSource.GetDefaultView(Items);
 
 			UpdateThread = new Thread(() =>
 			{
@@ -175,7 +175,7 @@ namespace ReShade.Setup.Pages
 				// Add Epic Games Launcher install location
 				try
 				{
-					string epicGamesConfigPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EpicGamesLauncher", "Saved", "Config", "Windows", "GameUserSettings.ini");
+					string epicGamesConfigPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EpicGamesLauncher", "Saved", "Config", "WindowsEditor", "GameUserSettings.ini");
 					if (File.Exists(epicGamesConfigPath))
 					{
 						var epicGamesConfig = new Utilities.IniFile(epicGamesConfigPath);
@@ -230,7 +230,6 @@ namespace ReShade.Setup.Pages
 #endif
 
 				const int SPLIT_SIZE = 50;
-				var items = new KeyValuePair<string, FileVersionInfo>[SPLIT_SIZE];
 
 #if !RESHADE_SETUP_USE_MUI_CACHE
 				while (searchPaths.Count != 0)
@@ -255,7 +254,9 @@ namespace ReShade.Setup.Pages
 						searchPath.Contains("\\System Volume Information") ||
 						searchPath.ContainsIgnoreCase("java") ||
 						searchPath.ContainsIgnoreCase("steamvr") ||
-						searchPath.Contains("\\Portal\\bin"))
+						searchPath.Contains("\\Portal\\bin") ||
+						searchPath.Contains("DotNet") ||
+						searchPath.Contains("\\lib\\"))
 					{
 						continue;
 					}
@@ -288,6 +289,8 @@ namespace ReShade.Setup.Pages
 							SuspendUpdateThreadEvent.WaitOne();
 						}
 
+						var items = new KeyValuePair<string, FileVersionInfo>[SPLIT_SIZE];
+
 						for (int i = 0; i < Math.Min(SPLIT_SIZE, files.Count - offset); ++i)
 						{
 							string path = files[offset + i];
@@ -300,6 +303,7 @@ namespace ReShade.Setup.Pages
 							// Exclude common installer, support and launcher executables
 							if (path.ContainsIgnoreCase("activation") ||
 								path.ContainsIgnoreCase("apputil") ||
+								path.ContainsIgnoreCase("autorun") ||
 								path.ContainsIgnoreCase("benchmark") ||
 								path.ContainsIgnoreCase("cefprocess") ||
 								path.ContainsIgnoreCase("compile") ||
@@ -308,8 +312,11 @@ namespace ReShade.Setup.Pages
 								path.ContainsIgnoreCase("console") ||
 								path.ContainsIgnoreCase("convert") ||
 								path.ContainsIgnoreCase("crash") ||
+								path.ContainsIgnoreCase("dotnetfx") ||
 								path.ContainsIgnoreCase("diagnostics") ||
 								path.ContainsIgnoreCase("download") ||
+								path.ContainsIgnoreCase("error") ||
+								path.ContainsIgnoreCase("handler") ||
 								path.ContainsIgnoreCase("helper") ||
 								path.ContainsIgnoreCase("inject") ||
 								path.ContainsIgnoreCase("install") ||
@@ -322,6 +329,7 @@ namespace ReShade.Setup.Pages
 								path.ContainsIgnoreCase("register") ||
 								path.ContainsIgnoreCase("report") ||
 								path.ContainsIgnoreCase("server") ||
+								path.ContainsIgnoreCase("service") ||
 								path.ContainsIgnoreCase("setup") ||
 								path.ContainsIgnoreCase("steamvr") ||
 								path.ContainsIgnoreCase("subprocess") ||
@@ -336,7 +344,9 @@ namespace ReShade.Setup.Pages
 								path.ContainsIgnoreCase("webview") ||
 								path.Contains("7za") ||
 								path.Contains("createdump") ||
+								path.Contains("crs-") ||
 								path.Contains("fossilize") ||
+								path.Contains("fxc") ||
 								path.Contains("Rpt") || // CrashRpt, SndRpt
 								path.Contains("svc") ||
 								path.Contains("SystemSoftware") ||
@@ -352,14 +362,14 @@ namespace ReShade.Setup.Pages
 						{
 							foreach (var item in arg)
 							{
-								if (item.Key == null || ProgramListItems.Any(x => x.Path == item.Key))
+								if (string.IsNullOrEmpty(item.Key) || Items.Any(x => x.Path == item.Key))
 								{
 									continue;
 								}
 
-								ProgramListItems.Add(new ProgramItem(item.Key, item.Value));
+								Items.Add(new App(item.Key, item.Value));
 							}
-						}), DispatcherPriority.Background, (object)items);
+						}), DispatcherPriority.Background, items);
 
 						// Give back control to the OS
 						Thread.Sleep(5);
@@ -383,7 +393,20 @@ namespace ReShade.Setup.Pages
 #endif
 			});
 
+			UpdateThread.IsBackground = true;
 			UpdateThread.Start();
+		}
+
+		readonly Thread UpdateThread = null;
+		readonly AutoResetEvent SuspendUpdateThreadEvent = new AutoResetEvent(false);
+		bool SuspendUpdateThread = false;
+		bool IgnorePathBoxChanged = false;
+		readonly ObservableCollection<App> Items = new ObservableCollection<App>();
+
+		public string FileName
+		{
+			get => PathBox.Text;
+			set => PathBox.Text = value;
 		}
 
 		public void Cancel()
@@ -447,17 +470,17 @@ namespace ReShade.Setup.Pages
 
 			if (PathBox.IsFocused)
 			{
-				ProgramList.UnselectAll();
+				ItemsListBox.UnselectAll();
 			}
 		}
 
 		private void OnSortByChanged(object sender, SelectionChangedEventArgs e)
 		{
-			var view = CollectionViewSource.GetDefaultView(ProgramListItems);
+			var view = CollectionViewSource.GetDefaultView(Items);
 
 			if (PathBox != null && PathBox.Text != "Search" && !Path.IsPathRooted(PathBox.Text))
 			{
-				view.Filter = item => ((ProgramItem)item).Path.ContainsIgnoreCase(PathBox.Text) || ((ProgramItem)item).Name.ContainsIgnoreCase(PathBox.Text);
+				view.Filter = item => ((App)item).Path.ContainsIgnoreCase(PathBox.Text) || ((App)item).Name.ContainsIgnoreCase(PathBox.Text);
 			}
 			else
 			{
@@ -468,26 +491,26 @@ namespace ReShade.Setup.Pages
 			switch (SortBy.SelectedIndex)
 			{
 				case 0:
-					view.SortDescriptions.Add(new SortDescription(nameof(ProgramItem.LastAccess), ListSortDirection.Descending));
+					view.SortDescriptions.Add(new SortDescription(nameof(App.LastAccess), ListSortDirection.Descending));
 					break;
 				case 1:
-					view.SortDescriptions.Add(new SortDescription(nameof(ProgramItem.Name), ListSortDirection.Ascending));
+					view.SortDescriptions.Add(new SortDescription(nameof(App.Name), ListSortDirection.Ascending));
 					break;
 				case 2:
-					view.SortDescriptions.Add(new SortDescription(nameof(ProgramItem.Name), ListSortDirection.Descending));
+					view.SortDescriptions.Add(new SortDescription(nameof(App.Name), ListSortDirection.Descending));
 					break;
 			}
 		}
 
 		private void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
 		{
-			if (ProgramList.SelectedItem is ProgramItem item)
+			if (ItemsListBox.SelectedItem is App item)
 			{
 				IgnorePathBoxChanged = true;
 				FileName = item.Path;
 				IgnorePathBoxChanged = false;
 
-				ProgramList.ScrollIntoView(item);
+				ItemsListBox.ScrollIntoView(item);
 			}
 		}
 	}

@@ -16,6 +16,8 @@ namespace reshadefx
 	/// </summary>
 	class codegen
 	{
+		friend class parser;
+
 	public:
 		/// <summary>
 		/// Virtual destructor to guarantee that memory of the implementations deriving from this interface is properly destroyed.
@@ -23,12 +25,24 @@ namespace reshadefx
 		virtual ~codegen() {}
 
 		/// <summary>
-		/// Writes result of the code generation to the specified <paramref name="module"/>.
+		/// Gets the module describing the generated code.
 		/// </summary>
-		/// <param name="module">Target module to fill.</param>
-		virtual void write_result(module &module) = 0;
+		effect_module &module() { return _module; }
 
-	public:
+		/// <summary>
+		/// Finalizes and returns the generated code for the entire module (all entry points).
+		/// </summary>
+		virtual std::string finalize_code() const = 0;
+		/// <summary>
+		/// Finalizes and assembles the generated code for the specified entry point (and no other entry points).
+		/// </summary>
+		/// <param name="entry_point_name">Name of the entry point function to generate code for.</param>
+		/// <param name="binary">Output binary code.</param>
+		/// <param name="assembly">Output assembly code.</param>
+		/// <param name="errors">Output list of error messages.</param>
+		virtual bool assemble_code_for_entry_point(const std::string &entry_point_name, std::string &binary, std::string &assembly, std::string &errors) const = 0;
+
+	protected:
 		/// <summary>
 		/// An opaque ID referring to a SSA value or basic block.
 		/// </summary>
@@ -40,14 +54,14 @@ namespace reshadefx
 		/// <param name="loc">Source location matching this definition (for debugging).</param>
 		/// <param name="info">Description of the type.</param>
 		/// <returns>New SSA ID of the type.</returns>
-		virtual id define_struct(const location &loc, struct_info &info) = 0;
+		virtual id define_struct(const location &loc, struct_type &info) = 0;
 		/// <summary>
 		/// Defines a new texture binding.
 		/// </summary>
 		/// <param name="loc">Source location matching this definition (for debugging).</param>
 		/// <param name="info">Description of the texture object.</param>
 		/// <returns>New SSA ID of the binding.</returns>
-		virtual id define_texture(const location &loc, texture_info &info) = 0;
+		virtual id define_texture(const location &loc, texture &info) = 0;
 		/// <summary>
 		/// Defines a new sampler binding.
 		/// </summary>
@@ -55,7 +69,7 @@ namespace reshadefx
 		/// <param name="tex_info">Description of the texture this sampler object references.</param>
 		/// <param name="info">Description of the sampler object.</param>
 		/// <returns>New SSA ID of the binding.</returns>
-		virtual id define_sampler(const location &loc, const texture_info &tex_info, sampler_info &info) = 0;
+		virtual id define_sampler(const location &loc, const texture &tex_info, sampler &info) = 0;
 		/// <summary>
 		/// Defines a new storage binding.
 		/// </summary>
@@ -63,14 +77,14 @@ namespace reshadefx
 		/// <param name="tex_info">Description of the texture this storage object references.</param>
 		/// <param name="info">Description of the storage object.</param>
 		/// <returns>New SSA ID of the binding.</returns>
-		virtual id define_storage(const location &loc, const texture_info &tex_info, storage_info &info) = 0;
+		virtual id define_storage(const location &loc, const texture &tex_info, storage &info) = 0;
 		/// <summary>
 		/// Defines a new uniform variable.
 		/// </summary>
 		/// <param name="loc">Source location matching this definition (for debugging).</param>
 		/// <param name="info">Description of the uniform variable.</param>
 		/// <returns>New SSA ID of the variable.</returns>
-		virtual id define_uniform(const location &loc, uniform_info &info) = 0;
+		virtual id define_uniform(const location &loc, uniform &info) = 0;
 		/// <summary>
 		/// Defines a new variable.
 		/// </summary>
@@ -82,26 +96,25 @@ namespace reshadefx
 		/// <returns>New SSA ID of the variable.</returns>
 		virtual id define_variable(const location &loc, const type &type, std::string name = std::string(), bool global = false, id initializer_value = 0) = 0;
 		/// <summary>
-		/// Defines a new function and its function parameters and make it current. Any code added after this call is added to this function.
+		/// Defines a new function and its function parameters and make it current.
+		/// Any code added after this call is added to this function.
 		/// </summary>
 		/// <param name="loc">Source location matching this definition (for debugging).</param>
 		/// <param name="info">Description of the function.</param>
 		/// <returns>New SSA ID of the function.</returns>
-		virtual id define_function(const location &loc, function_info &info) = 0;
+		virtual id define_function(const location &loc, function &info) = 0;
 
 		/// <summary>
 		/// Defines a new effect technique.
 		/// </summary>
 		/// <param name="loc">Source location matching this definition (for debugging).</param>
 		/// <param name="info">Description of the technique.</param>
-		void define_technique(technique_info &&info) { _module.techniques.push_back(std::move(info)); }
+		void define_technique(technique &&info) { _module.techniques.push_back(std::move(info)); }
 		/// <summary>
 		/// Makes a function a shader entry point.
 		/// </summary>
-		/// <param name="function">Function to use as entry point. May be overwritten to point to a new unique function for this entry point.</param>
-		/// <param name="type">Shader type (vertex, pixel or compute shader).</param>
-		/// <param name="num_threads">Number of local threads it this is a compute entry point.</param>
-		virtual void define_entry_point(function_info &function, shader_type type, int num_threads[3] = nullptr) = 0;
+		/// <param name="function">Function to use as entry point. May be overwritten to point to a new uniquely generated function.</param>
+		virtual void define_entry_point(function &function) = 0;
 
 		/// <summary>
 		/// Resolves the access chain and add a load operation to the output.
@@ -109,7 +122,7 @@ namespace reshadefx
 		/// <param name="chain">Access chain pointing to the variable to load from.</param>
 		/// <param name="force_new_id">Set to <see langword="true"/> to force this to return a new SSA ID for l-value loads.</param>
 		/// <returns>New SSA ID with the loaded value.</returns>
-		virtual id emit_load(const expression &chain, bool force_new_id = false) = 0;
+		virtual id   emit_load(const expression &chain, bool force_new_id = false) = 0;
 		/// <summary>
 		/// Resolves the access chain and add a store operation to the output.
 		/// </summary>
@@ -122,7 +135,7 @@ namespace reshadefx
 		/// <param name="chain">Access chain pointing to the variable to resolve.</param>
 		/// <param name="chain_index">Output value which is set to the index in the access chain up to which the access chain went.</param>
 		/// <returns>New SSA ID with a pointer to the value.</returns>
-		virtual id emit_access_chain(const expression &chain, size_t &chain_index) { chain_index = chain.chain.size(); return emit_load(chain); }
+		virtual id   emit_access_chain(const expression &chain, size_t &chain_index) { chain_index = chain.chain.size(); return emit_load(chain); }
 
 		/// <summary>
 		/// Creates a SSA constant value.
@@ -131,6 +144,19 @@ namespace reshadefx
 		/// <param name="data">Actual constant data to convert into a SSA ID.</param>
 		/// <returns>New SSA ID with the constant value.</returns>
 		virtual id emit_constant(const type &type, const constant &data) = 0;
+		id emit_constant(const type &data_type, uint32_t value)
+		{
+			// Create a constant value of the specified type
+			constant data = {}; // Initialize to zero, so that components not set below still have a defined value for lookup via std::memcmp
+			for (unsigned int i = 0; i < data_type.components(); ++i)
+			{
+				if (data_type.is_integral())
+					data.as_uint[i] = value;
+				else
+					data.as_float[i] = static_cast<float>(value);
+			}
+			return emit_constant(data_type, data);
+		}
 
 		/// <summary>
 		/// Adds an unary operation to the output (built-in operation with one argument).
@@ -216,137 +242,154 @@ namespace reshadefx
 		virtual void emit_switch(const location &loc, id selector_value, id selector_block, id default_label, id default_block, const std::vector<id> &case_literal_and_labels, const std::vector<id> &case_blocks, unsigned int flags) = 0;
 
 		/// <summary>
+		/// Adds a pragma operator to the output.
+		/// </summary>
+		/// <param name="pragma">Argument of the pragma operator.</param>
+		virtual void emit_pragma(const std::string &pragma) = 0;
+
+		/// <summary>
 		/// Returns <see langword="true"/> if code is currently added to a basic block.
 		/// </summary>
 		bool is_in_block() const { return _current_block != 0; }
 		/// <summary>
 		/// Returns <see langword="true"/> if code is currently added to a function.
 		/// </summary>
-		virtual bool is_in_function() const { return is_in_block(); }
+		bool is_in_function() const { return _current_function != nullptr; }
 
 		/// <summary>
 		/// Creates a new basic block.
 		/// </summary>
 		/// <returns>New ID of the basic block.</returns>
-		virtual id create_block() { return make_id(); }
+		virtual id   create_block() { return make_id(); }
 		/// <summary>
 		/// Overwrites the current block ID.
 		/// </summary>
 		/// <param name="id">ID of the block to make current.</param>
 		/// <returns>ID of the previous basic block.</returns>
-		virtual id set_block(id id) = 0;
+		virtual id   set_block(id id) = 0;
 		/// <summary>
-		/// Creates a new basic block and make it current.
+		/// Creates a new basic block and makes it current.
 		/// </summary>
 		/// <param name="id">ID of the basic block to create and make current.</param>
 		virtual void enter_block(id id) = 0;
 		/// <summary>
-		/// Returns from the current basic block and kill the shader invocation.
+		/// Returns from the current basic block and kills the shader invocation.
 		/// </summary>
 		/// <returns>ID of the current basic block.</returns>
-		virtual id leave_block_and_kill() = 0;
+		virtual id   leave_block_and_kill() = 0;
 		/// <summary>
-		/// Returns from the current basic block and hand control flow over to the function call side.
+		/// Returns from the current basic block and hands control flow over to the function call side.
 		/// </summary>
 		/// <param name="value">Optional SSA ID of a return value.</param>
 		/// <returns>ID of the current basic block.</returns>
-		virtual id leave_block_and_return(id value = 0) = 0;
+		virtual id   leave_block_and_return(id value = 0) = 0;
 		/// <summary>
-		/// Diverges the current control flow and enter a switch.
+		/// Diverges the current control flow and enters a switch.
 		/// </summary>
 		/// <param name="value">SSA ID of the selector value to decide the switch path.</param>
 		/// <returns>ID of the current basic block.</returns>
-		virtual id leave_block_and_switch(id value, id default_target) = 0;
+		virtual id   leave_block_and_switch(id value, id default_target) = 0;
 		/// <summary>
-		/// Diverges the current control flow and jump to the specified target block.
+		/// Diverges the current control flow and jumps to the specified target block.
 		/// </summary>
 		/// <param name="target">ID of the basic block to jump to.</param>
 		/// <param name="is_continue">Set to <see langword="true"/> if this corresponds to a loop continue statement.</param>
 		/// <returns>ID of the current basic block.</returns>
-		virtual id leave_block_and_branch(id target, unsigned int loop_flow = 0) = 0;
+		virtual id   leave_block_and_branch(id target, unsigned int loop_flow = 0) = 0;
 		/// <summary>
-		/// Diverges the current control flow and jump to one of the specified target blocks, depending on the condition.
+		/// Diverges the current control flow and jumps to one of the specified target blocks, depending on the condition.
 		/// </summary>
 		/// <param name="condition">SSA ID of a value used to choose which path to take.</param>
 		/// <param name="true_target">ID of the basic block to jump to when the condition is true.</param>
 		/// <param name="false_target">ID of the basic block to jump to when the condition is false.</param>
 		/// <returns>ID of the current basic block.</returns>
-		virtual id leave_block_and_branch_conditional(id condition, id true_target, id false_target) = 0;
+		virtual id   leave_block_and_branch_conditional(id condition, id true_target, id false_target) = 0;
 		/// <summary>
 		/// Leaves the current function. Any code added after this call is added in the global scope.
 		/// </summary>
 		virtual void leave_function() = 0;
 
 		/// <summary>
+		/// Calculates sampler and storage bindings to take as little binding space as possible for each entry point.
+		/// </summary>
+		virtual void optimize_bindings();
+
+		/// <summary>
 		/// Looks up an existing struct type.
 		/// </summary>
 		/// <param name="id">SSA ID of the type to find.</param>
 		/// <returns>Reference to the struct description.</returns>
-		const struct_info &get_struct(id id) const
+		const struct_type &get_struct(id id) const
 		{
-			return *std::find_if(_structs.begin(), _structs.end(),
-				[id](const auto &it) { return it.definition == id; });
+			const auto it = std::find_if(_structs.begin(), _structs.end(),
+				[id](const struct_type &info) { return info.id == id; });
+			return *it;
 		}
 		/// <summary>
-		/// Looks up an existing texture binding.
+		/// Looks up an existing texture object.
 		/// </summary>
-		/// <param name="id">SSA ID of the texture binding to find.</param>
+		/// <param name="id">SSA ID of the texture object to find.</param>
 		/// <returns>Reference to the texture description.</returns>
-		texture_info &get_texture(id id)
+		texture &get_texture(id id)
 		{
-			return *std::find_if(_module.textures.begin(), _module.textures.end(),
-				[id](const auto &it) { return it.id == id; });
+			const auto it = std::find_if(_module.textures.begin(), _module.textures.end(),
+				[id](const texture &info) { return info.id == id; });
+			return *it;
 		}
 		/// <summary>
-		/// Looks up an existing sampler binding.
+		/// Looks up an existing sampler object.
 		/// </summary>
-		/// <param name="id">SSA ID of the sampler binding to find.</param>
+		/// <param name="id">SSA ID of the sampler object to find.</param>
 		/// <returns>Reference to the sampler description.</returns>
-		const sampler_info &get_sampler(id id) const
+		sampler &get_sampler(id id)
 		{
-			return *std::find_if(_module.samplers.begin(), _module.samplers.end(),
-				[id](const auto &it) { return it.id == id; });
+			const auto it = std::find_if(_module.samplers.begin(), _module.samplers.end(),
+				[id](const sampler &info) { return info.id == id; });
+			return *it;
 		}
 		/// <summary>
-		/// Looks up an existing storage binding.
+		/// Looks up an existing storage object.
 		/// </summary>
-		/// <param name="id">SSA ID of the storage binding to find.</param>
+		/// <param name="id">SSA ID of the storage object to find.</param>
 		/// <returns>Reference to the storage description.</returns>
-		const storage_info &get_storage(id id) const
+		storage &get_storage(id id)
 		{
-			return *std::find_if(_module.storages.begin(), _module.storages.end(),
-				[id](const auto &it) { return it.id == id; });
+			const auto it = std::find_if(_module.storages.begin(), _module.storages.end(),
+				[id](const storage &info) { return info.id == id; });
+			return *it;
 		}
 		/// <summary>
 		/// Looks up an existing function definition.
 		/// </summary>
 		/// <param name="id">SSA ID of the function variable to find.</param>
 		/// <returns>Reference to the function description.</returns>
-		function_info &get_function(id id)
+		function &get_function(id id)
 		{
-			return *std::find_if(_functions.begin(), _functions.end(),
-				[id](const auto &it) { return it->definition == id; })->get();
+			const auto it = std::find_if(_functions.begin(), _functions.end(),
+				[id](const std::unique_ptr<function> &info) { return info->id == id; });
+			return *it->get();
+		}
+		function *find_function(const std::string &unique_name)
+		{
+			const auto it = std::find_if(_functions.begin(), _functions.end(),
+				[&unique_name](const std::unique_ptr<function> &info) { return info->unique_name == unique_name; });
+			return it != _functions.end() ? it->get() : nullptr;
+		}
+		const function *find_function(const std::string &unique_name) const
+		{
+			return const_cast<codegen *>(this)->find_function(unique_name);
 		}
 
-	protected:
 		id make_id() { return _next_id++; }
 
-		static uint32_t align_up(uint32_t size, uint32_t alignment)
-		{
-			alignment -= 1;
-			return ((size + alignment) & ~alignment);
-		}
-		static uint32_t align_up(uint32_t size, uint32_t alignment, uint32_t elements)
-		{
-			return align_up(size, alignment) * (elements - 1) + size;
-		}
+		effect_module _module;
+		std::vector<struct_type> _structs;
+		std::vector<std::unique_ptr<function>> _functions;
 
-		reshadefx::module _module;
-		std::vector<struct_info> _structs;
-		std::vector<std::unique_ptr<function_info>> _functions;
 		id _next_id = 1;
 		id _last_block = 0;
 		id _current_block = 0;
+		function *_current_function = nullptr;
 	};
 
 	/// <summary>
@@ -365,6 +408,8 @@ namespace reshadefx
 	/// <param name="debug_info">Whether to append debug information like line directives to the generated code.</param>
 	/// <param name="uniforms_to_spec_constants">Whether to convert uniform variables to specialization constants.</param>
 	codegen *create_codegen_hlsl(unsigned int shader_model, bool debug_info, bool uniforms_to_spec_constants);
+	codegen *create_codegen_dxbc(unsigned int shader_model, bool debug_info, bool uniforms_to_spec_constants, int optimization_level);
+	codegen *create_codegen_dxil(unsigned int shader_model, bool debug_info, bool uniforms_to_spec_constants, int optimization_level);
 	/// <summary>
 	/// Creates a back-end implementation for SPIR-V code generation.
 	/// </summary>

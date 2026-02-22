@@ -39,6 +39,10 @@
 #include "NFSUC_PreFEngHook.h"
 #endif
 
+#ifdef GAME_UC
+bool g_nfs_motion_blur_enabled = false;
+#endif
+
 static bool filter_text(const std::string_view &text, const std::string_view &filter)
 {
 	return filter.empty() ||
@@ -5585,7 +5589,7 @@ void reshade::runtime::draw_gui_nfs()
 	if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_None))
 	{
 #ifdef GAME_UC
-		if (ImGui::Checkbox("Motion Blur", &bMotionBlur))
+		if (ImGui::Checkbox("Motion Blur", &g_nfs_motion_blur_enabled))
 		{
 			modified = true;
 		}
